@@ -8,3 +8,5 @@ outputs/**
 *.mov
 *.avi
 .DS_Store
+# Keep manual annotations (which may encode sensitive motion data) out of public commits.
+data/annotations*.csv
