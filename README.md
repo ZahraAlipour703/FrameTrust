@@ -16,7 +16,7 @@ This is an experimental project, not a claim of a novel state-of-the-art archite
 2. Runs MediaPipe Pose on a clean reference pass and on controlled degraded versions of the same frames.
 3. Simulates frame repetition (a simple dropped-frame proxy), a central rectangular occlusion, Gaussian blur, and downsampling.
 4. Compares raw landmarks, linear interpolation, and confidence-aware interpolation plus adaptive smoothing.
-5. Reports landmark error against the **clean model's predictions** (a pseudo-reference, not ground-truth annotation), low-visibility rate, and temporal jitter. Saves CSV tables and a plot.
+5. Reports landmark agreement against the clean model as an explicitly labeled diagnostic. With an optional manual annotation CSV, it also reports independently measured pose error, prediction coverage, and PCK.
 
 ## Quick start (Windows PowerShell)
 
@@ -34,11 +34,40 @@ To run the full clip, omit `--max-frames`. A 300-frame smoke run is a sensible f
 
 If you already have an environment where `mediapipe` and OpenCV work, activate it and run `pip install -e .`.
 
+
+## Ground-truth evaluation (recommended before making accuracy claims)
+
+The clean MediaPipe pass is not ground truth. To measure actual pose error without buying sensors or downloading a large dataset, annotate a sparse set of frames from the same video. The included OpenCV tool asks you to click 13 major landmarks on sampled frames.
+
+First create annotations:
+
+```powershell
+python scripts/annotate_video.py --video path\to\your_video.mp4 --out data\annotations.csv --stride 15 --max-frames 300
+```
+
+In the annotation window, click the displayed joint; press `s` when that joint is not visible, `u` to undo the previous point, and `q` to save and quit. The CSV stores normalized image coordinates in [0, 1], original frame indices, MediaPipe joint indices, and visibility labels. Use a single-person clip and annotate the same original video that will be evaluated. Only manually labeled points are used; joints you did not reach before quitting are not treated as invisible.
+
+Then run the experiment with those labels:
+
+```powershell
+python scripts/run_experiment.py --video path\to\your_video.mp4 --ground-truth data\annotations.csv --out outputs\annotated_run --max-frames 300
+```
+
+Ground-truth columns added to `metrics.csv` include:
+
+- `gt_mean_error_normalized_image`: mean Euclidean x/y error in normalized image coordinates, on detected points.
+- `gt_mean_error_body_diagonal`: mean error divided by the annotated visible-joint bounding-box diagonal for that frame.
+- `gt_pck`: fraction of labeled points whose error is within the configured fraction of that frame's body-box diagonal (default 0.10).
+- `gt_prediction_coverage`: fraction of visible labeled points for which the estimator returned finite coordinates.
+
+Missing predictions count as PCK failures; coverage is reported so the error among detected points cannot conceal failures. Frames with fewer than two visible annotations cannot define the bounding-box scale and are omitted from these scale-normalized metrics. These are transparent, project-specific metrics—not a claim of compatibility with an official benchmark protocol. Repeated annotations, invalid coordinates, and joint indices outside the estimator's output are rejected.
+
 ## Outputs
 
 - `landmarks_clean.csv`, `landmarks_frame_drop.csv`, etc.: extracted landmarks and confidence/visibility per frame.
 - `metrics.csv`: one row per corruption × method.
-- `joint_error_by_condition.png`: comparison of mean normalized-image joint displacement against the clean model predictions.
+- `joint_error_by_condition.png`: agreement diagnostic against the clean model predictions (not ground-truth accuracy).
+- `ground_truth_pck_by_condition.png` and `ground_truth_error_by_condition.png`: created when valid manual annotations are supplied.
 - `run_metadata.json`: configuration, frame counts, and explicit metric caveats.
 
 ## Experimental protocol
@@ -55,6 +84,7 @@ If you already have an environment where `mediapipe` and OpenCV work, activate i
 - The default occlusion is a synthetic black rectangle, not realistic object/person occlusion.
 - Frame dropping is simulated by repeating the previous frame to preserve frame count; it approximates a frozen/missed update rather than physically removing timestamps.
 - Results depend on the estimator, camera, clip, person scale, and motion.
+- The manual annotation tool is a sparse single-person workflow; annotation quality and number of labeled frames constrain the strength of any conclusion.
 - Interpolation can create unrealistic trajectories over long occlusions. Long-gap performance must be reported separately.
 - This starter performs 2D monocular pose analysis; it does not measure true 3D anatomy or clinical correctness.
 
