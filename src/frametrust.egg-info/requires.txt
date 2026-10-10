@@ -1,0 +1,8 @@
+numpy<2.1,>=1.24
+pandas>=2.0
+opencv-python>=4.8
+mediapipe<0.11,>=0.10.14
+matplotlib>=3.7
+
+[dev]
+pytest>=8.0
