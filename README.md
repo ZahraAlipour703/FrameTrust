@@ -1,0 +1,83 @@
+# FrameTrust: Reliable Human-Pose Tracking from Ordinary Video
+
+**A camera-only, CPU-friendly computer-vision project. No wearable sensors or special hardware are required.**
+
+FrameTrust studies how common video problems—partial occlusion, blur, low resolution, and repeated/dropped frames—affect monocular human-pose estimates, then compares a simple confidence-aware temporal repair method with uncorrected estimates and linear interpolation.
+
+## Research question
+
+> When pose estimation becomes unreliable because video is degraded, can a lightweight, confidence-aware temporal repair step recover more temporally stable landmarks without introducing excessive pose error?
+
+This is an experimental project, not a claim of a novel state-of-the-art architecture. Video-based temporal pose estimation and occlusion robustness are active research areas; the defensible contribution must come from careful experimental design, transparent metrics, and a useful low-compute evaluation—not from claiming the broad problem is new.
+
+## What it does
+
+1. Loads a local video (`.mp4`, `.mov`, etc.) with OpenCV.
+2. Runs MediaPipe Pose on a clean reference pass and on controlled degraded versions of the same frames.
+3. Simulates frame repetition (a simple dropped-frame proxy), a central rectangular occlusion, Gaussian blur, and downsampling.
+4. Compares raw landmarks, linear interpolation, and confidence-aware interpolation plus adaptive smoothing.
+5. Reports landmark error against the **clean model's predictions** (a pseudo-reference, not ground-truth annotation), low-visibility rate, and temporal jitter. Saves CSV tables and a plot.
+
+## Quick start (Windows PowerShell)
+
+Use Python 3.10 or 3.11 in a fresh virtual environment:
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e .
+python scripts/run_experiment.py --video path\to\your_video.mp4 --out outputs\first_run --max-frames 300
+```
+
+To run the full clip, omit `--max-frames`. A 300-frame smoke run is a sensible first test. Pose inference runs several passes over the same video, so runtime depends on clip length and CPU speed.
+
+If you already have an environment where `mediapipe` and OpenCV work, activate it and run `pip install -e .`.
+
+## Outputs
+
+- `landmarks_clean.csv`, `landmarks_frame_drop.csv`, etc.: extracted landmarks and confidence/visibility per frame.
+- `metrics.csv`: one row per corruption × method.
+- `joint_error_by_condition.png`: comparison of mean normalized-image joint displacement against the clean model predictions.
+- `run_metadata.json`: configuration, frame counts, and explicit metric caveats.
+
+## Experimental protocol
+
+- First run on a short, clear clip with one person and a mostly visible body.
+- Repeat with several clips and viewpoints; do not draw conclusions from one video.
+- For every degradation, compare `raw`, `linear_interpolation`, and `confidence_aware` on exactly the same frames.
+- Report mean and standard deviation across clips, not just pooled frame counts.
+- Preserve a clip-level split if tuning thresholds: choose thresholds on development clips and report final metrics on held-out clips.
+- If you need ground-truth accuracy claims, evaluate against manually annotated landmarks or a dataset with appropriate ground-truth labels. The clean model's outputs are **not** ground truth.
+
+## Limitations
+
+- The default occlusion is a synthetic black rectangle, not realistic object/person occlusion.
+- Frame dropping is simulated by repeating the previous frame to preserve frame count; it approximates a frozen/missed update rather than physically removing timestamps.
+- Results depend on the estimator, camera, clip, person scale, and motion.
+- Interpolation can create unrealistic trajectories over long occlusions. Long-gap performance must be reported separately.
+- This starter performs 2D monocular pose analysis; it does not measure true 3D anatomy or clinical correctness.
+
+## Research positioning
+
+Current video-pose work explicitly studies temporal consistency and failure under occlusion, blur, and difficult motion. FrameTrust should be positioned as a reproducible, low-compute robustness and recovery study. Do not claim that temporal pose estimation or occlusion robustness is itself novel. A stronger contribution would require a clear hypothesis, multi-clip evaluation, ablations, and evidence that the proposed repair method improves an agreed metric without hiding failure cases.
+
+## Erasmus relevance
+
+- **Computer vision / AI:** pose estimation, temporal modeling, perturbation benchmarks, reproducibility.
+- **IMLEX / intelligent systems:** video perception, robustness, efficient inference, human-motion understanding.
+- **Biomedical engineering / sensing:** reliability of motion measurements and sensitivity to missing or low-confidence observations.
+
+This is a coherent transferable project, not a guarantee that it matches every programme's curriculum. Tailor the emphasis to each programme.
+
+## Suggested next milestones
+
+1. Verify extraction on your own short video.
+2. Run at least 5–10 varied clips and aggregate metrics by clip.
+3. Add realistic occlusion masks or annotated public video data.
+4. Compare against a stronger temporal baseline and run ablations for confidence thresholds and smoothing strength.
+5. Write results only after real video experiments have run; do not present synthetic unit-test inputs as experimental evidence.
+
+## Citation and reproducibility
+
+See [`SOURCES.md`](SOURCES.md) for research context and dataset notes. Cite MediaPipe and the papers relevant to any model and benchmark used in your final work. Respect licenses and privacy requirements for every video.
