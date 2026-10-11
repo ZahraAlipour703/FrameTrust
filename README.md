@@ -38,6 +38,44 @@ If you already have an environment where `mediapipe` and OpenCV work, activate i
 **MediaPipe compatibility:** FrameTrust currently calls the legacy `mp.solutions.pose` API. MediaPipe removed that API from Python packages starting with 0.10.31, so this project deliberately pins MediaPipe to `>=0.10.14,<0.10.31`. A future migration to the MediaPipe Tasks API should remove this upper bound.
 
 
+
+## Troubleshooting
+
+### MediaPipe returns HTTP 403 while downloading the pose model
+
+The legacy `mp.solutions.pose` API may try to download `pose_landmark_lite.tflite` from Google Cloud Storage when the model is absent. If that download returns HTTP 403 on your network, download the same named legacy model from the versioned MediaPipe Pose package mirror and place it at the path MediaPipe expects.
+
+Run the following in PowerShell **after activating the FrameTrust virtual environment**:
+
+```powershell
+$mpRoot = (& python -c "import mediapipe as mp; from pathlib import Path; print(Path(mp.__file__).resolve().parent)").Trim()
+$modelDir = Join-Path $mpRoot "modules\pose_landmark"
+New-Item -ItemType Directory -Force $modelDir | Out-Null
+$modelPath = Join-Path $modelDir "pose_landmark_lite.tflite"
+
+Invoke-WebRequest `
+  -Uri "https://unpkg.com/@mediapipe/pose@0.5.1675469404/pose_landmark_lite.tflite" `
+  -OutFile $modelPath -UseBasicParsing -TimeoutSec 180
+
+if ((Test-Path $modelPath) -and (Get-Item $modelPath).Length -gt 1000000) {
+    Get-Item $modelPath | Format-List FullName, Length
+} else {
+    throw "Pose model download failed or returned an unexpectedly small file."
+}
+```
+
+Verify that the model initializes before rerunning the experiment:
+
+```powershell
+python -c "import mediapipe as mp; p=mp.solutions.pose.Pose(model_complexity=0); p.close(); print('Pose model initialized')"
+```
+
+Do not commit the downloaded model or videos to Git. The model is a runtime asset; the script above puts it into your active Python environment.
+
+### OpenCV compatibility
+
+FrameTrust uses MediaPipe's legacy Solutions API, so its OpenCV dependency is pinned to the OpenCV 4.x contrib distribution. Avoid installing OpenCV 5 alongside NumPy 1.x for this environment, and avoid installing both `opencv-python` and `opencv-contrib-python` in a fresh environment because they share the `cv2` namespace.
+
 ## Ground-truth evaluation (recommended before making accuracy claims)
 
 The clean MediaPipe pass is not ground truth. To measure actual pose error without buying sensors or downloading a large dataset, annotate a sparse set of frames from the same video. The included OpenCV tool asks you to click 13 major landmarks on sampled frames.
