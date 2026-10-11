@@ -12,8 +12,8 @@ license = {text = "MIT"}
 dependencies = [
   "numpy>=1.24,<2.1",
   "pandas>=2.0",
-  "opencv-python>=4.8",
-  "mediapipe>=0.10.14,<0.11",
+  "opencv-contrib-python>=4.8,<5",
+  "mediapipe>=0.10.14,<0.10.31",
   "matplotlib>=3.7",
 ]
 
