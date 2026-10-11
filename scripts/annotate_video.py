@@ -9,8 +9,21 @@ import cv2
 import numpy as np
 import pandas as pd
 
-# MediaPipe Pose landmark indices: face/shoulders, arms, hips, knees and ankles.
-JOINTS = [
+# MediaPipe Pose landmark indices.
+# Squat-focused profile: lower-body landmarks relevant to a squat clip.
+SQUAT_JOINTS = [
+    (23, "left_hip"),
+    (24, "right_hip"),
+    (25, "left_knee"),
+    (26, "right_knee"),
+    (27, "left_ankle"),
+    (28, "right_ankle"),
+    (31, "left_foot_index"),
+    (32, "right_foot_index"),
+]
+
+# Keep the broad set available for videos framed to show the full body.
+FULL_BODY_JOINTS = [
     (0, "nose"),
     (11, "left_shoulder"),
     (12, "right_shoulder"),
@@ -25,6 +38,10 @@ JOINTS = [
     (27, "left_ankle"),
     (28, "right_ankle"),
 ]
+JOINT_PROFILES = {
+    "squat": SQUAT_JOINTS,
+    "full_body": FULL_BODY_JOINTS,
+}
 OUTPUT_COLUMNS = [
     "frame_index", "timestamp_seconds", "joint_index", "joint_name",
     "x", "y", "visible",
@@ -39,6 +56,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out", type=Path, default=Path("data/annotations.csv"),
         help="Output annotation CSV (default: data/annotations.csv)",
+    )
+    parser.add_argument(
+        "--profile", choices=sorted(JOINT_PROFILES), default="squat",
+        help="Landmark set: squat=hips/knees/ankles/feet (default); full_body=13 upper/lower-body landmarks",
     )
     parser.add_argument("--stride", type=int, default=15,
                         help="Annotate every Nth frame, starting with frame 0 (default: 15)")
@@ -58,6 +79,7 @@ def annotate_frame(
     frame_index: int,
     timestamp_seconds: float,
     window_name: str,
+    joints: list[tuple[int, str]],
 ) -> tuple[list[dict[str, int | float | str]], bool]:
     """Return annotations for one frame and whether the user requested exit."""
     height, width = frame.shape[:2]
@@ -85,12 +107,12 @@ def annotate_frame(
 
     should_quit = False
     while True:
-        complete = cursor >= len(JOINTS)
+        complete = cursor >= len(joints)
         if complete:
             joint_index, joint_name = -1, "FRAME COMPLETE"
             prompt = "Enter: accept frame | U: undo last point | Q: save and quit"
         else:
-            joint_index, joint_name = JOINTS[cursor]
+            joint_index, joint_name = joints[cursor]
             prompt = "Click joint | S: not visible | U: undo | Q: save and quit"
 
         display = frame.copy()
@@ -113,7 +135,7 @@ def annotate_frame(
             cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA,
         )
         cv2.putText(
-            display, f"Annotated {cursor}/{len(JOINTS)} joints",
+            display, f"Annotated {cursor}/{len(joints)} landmarks",
             (10, 74), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (190, 220, 190), 1, cv2.LINE_AA,
         )
         cv2.imshow(window_name, display)
@@ -133,7 +155,7 @@ def annotate_frame(
             cursor += 1
         elif key == ord("u") and cursor > 0:
             cursor -= 1
-            picked.pop(JOINTS[cursor][0], None)
+            picked.pop(joints[cursor][0], None)
             state["click"] = None
         elif complete and key in (10, 13, ord("n")):
             break
@@ -141,11 +163,11 @@ def annotate_frame(
             should_quit = True
             break
 
-    current_rows = [picked[index] for index, _ in JOINTS if index in picked]
+    current_rows = [picked[index] for index, _ in joints if index in picked]
     return current_rows, should_quit
 
 
-def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: int | None) -> int:
+def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: int | None, joints: list[tuple[int, str]]) -> int:
     if not video_path.is_file():
         raise FileNotFoundError(f"Video file not found: {video_path}")
     cap = cv2.VideoCapture(str(video_path))
@@ -169,7 +191,7 @@ def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: in
                 break
             if frame_index % stride == 0:
                 frame_rows, stop = annotate_frame(
-                    frame, frame_index, frame_index / fps, window_name
+                    frame, frame_index, frame_index / fps, window_name, joints
                 )
                 records.extend(frame_rows)
                 if records:
@@ -189,4 +211,4 @@ def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: in
 
 if __name__ == "__main__":
     args = parse_args()
-    annotate_video(args.video, args.out, args.stride, args.max_frames)
+    annotate_video(args.video, args.out, args.stride, args.max_frames, JOINT_PROFILES[args.profile])

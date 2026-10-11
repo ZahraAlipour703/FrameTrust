@@ -37,7 +37,7 @@ If you already have an environment where `mediapipe` and OpenCV work, activate i
 
 ## Ground-truth evaluation (recommended before making accuracy claims)
 
-The clean MediaPipe pass is not ground truth. To measure actual pose error without buying sensors or downloading a large dataset, annotate a sparse set of frames from the same video. The included OpenCV tool asks you to click 13 major landmarks on sampled frames.
+The clean MediaPipe pass is not ground truth. To measure actual pose error without buying sensors or downloading a large dataset, annotate a sparse set of frames from the same video. The annotation tool supports video-specific landmark profiles. Its default `squat` profile asks for eight lower-body landmarks (left/right hips, knees, ankles, and foot indices); `full_body` is available only when the video framing supports the broader 13-landmark set.
 
 First create annotations:
 
@@ -45,7 +45,7 @@ First create annotations:
 python scripts/annotate_video.py --video path\to\your_video.mp4 --out data\annotations.csv --stride 15 --max-frames 300
 ```
 
-In the annotation window, click the displayed joint; press `s` when that joint is not visible, `u` to undo the previous point, and `q` to save and quit. The CSV stores normalized image coordinates in [0, 1], original frame indices, MediaPipe joint indices, and visibility labels. Use a single-person clip and annotate the same original video that will be evaluated. Only manually labeled points are used; joints you did not reach before quitting are not treated as invisible.
+In the annotation window, click the requested landmark if it is visible; press `s` only when that landmark is genuinely out of frame or occluded, `u` to undo the previous point, and `Enter` to accept a completed frame. Press `q` to save and quit early. The squat profile focuses evaluation on lower-body pose reliability, not overall full-body accuracy. The CSV stores normalized image coordinates in [0, 1], original frame indices, MediaPipe landmark indices, and visibility labels. Use the same original video for annotation and evaluation. Only manually labeled points are used; landmarks not reached before quitting are not treated as invisible.
 
 Then run the experiment with those labels:
 
