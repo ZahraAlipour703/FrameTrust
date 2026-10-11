@@ -35,6 +35,9 @@ To run the full clip, omit `--max-frames`. A 300-frame smoke run is a sensible f
 If you already have an environment where `mediapipe` and OpenCV work, activate it and run `pip install -e .`.
 
 
+**MediaPipe compatibility:** FrameTrust currently calls the legacy `mp.solutions.pose` API. MediaPipe removed that API from Python packages starting with 0.10.31, so this project deliberately pins MediaPipe to `>=0.10.14,<0.10.31`. A future migration to the MediaPipe Tasks API should remove this upper bound.
+
+
 ## Ground-truth evaluation (recommended before making accuracy claims)
 
 The clean MediaPipe pass is not ground truth. To measure actual pose error without buying sensors or downloading a large dataset, annotate a sparse set of frames from the same video. The included OpenCV tool asks you to click 13 major landmarks on sampled frames.
