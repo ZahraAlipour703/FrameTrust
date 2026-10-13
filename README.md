@@ -40,7 +40,10 @@ If you already have an environment where `mediapipe` and OpenCV work, activate i
 
 ## Ground-truth evaluation (recommended before making accuracy claims)
 
-The clean MediaPipe pass is not ground truth. To measure actual pose error without buying sensors or downloading a large dataset, annotate a sparse set of frames from the same video. The annotation tool supports video-specific landmark profiles. Its default `squat` profile asks for eight lower-body landmarks (left/right hips, knees, ankles, and foot indices); `full_body` is available only when the video framing supports the broader 13-landmark set.
+The clean MediaPipe pass is not ground truth. To measure actual pose error without buying sensors or downloading a large dataset, annotate a sparse set of frames from the same video. The annotation tool supports video-specific landmark profiles. Its default `squat` profile asks for eight lower-body landmarks (left/right hips, knees, ankles, and foot indices). Use `upper_body` for the nose, shoulders, elbows, and wrists when lower-body landmarks are not reliably visible; use `full_body` only when the framing supports all 13 upper- and lower-body landmarks.
+
+
+For an upper-body-only clip, pass `--profile upper_body`; the manual labels should match the landmarks you intend to evaluate.
 
 First create annotations:
 

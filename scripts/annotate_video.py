@@ -22,6 +22,17 @@ SQUAT_JOINTS = [
     (32, "right_foot_index"),
 ]
 
+# Upper-body profile for clips where lower-body landmarks are not reliably visible.
+UPPER_BODY_JOINTS = [
+    (0, "nose"),
+    (11, "left_shoulder"),
+    (12, "right_shoulder"),
+    (13, "left_elbow"),
+    (14, "right_elbow"),
+    (15, "left_wrist"),
+    (16, "right_wrist"),
+]
+
 # Keep the broad set available for videos framed to show the full body.
 FULL_BODY_JOINTS = [
     (0, "nose"),
@@ -40,6 +51,7 @@ FULL_BODY_JOINTS = [
 ]
 JOINT_PROFILES = {
     "squat": SQUAT_JOINTS,
+    "upper_body": UPPER_BODY_JOINTS,
     "full_body": FULL_BODY_JOINTS,
 }
 OUTPUT_COLUMNS = [
@@ -59,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--profile", choices=sorted(JOINT_PROFILES), default="squat",
-        help="Landmark set: squat=hips/knees/ankles/feet (default); full_body=13 upper/lower-body landmarks",
+        help="Landmark set: squat=lower body (default); upper_body=nose/shoulders/elbows/wrists; full_body=13 landmarks",
     )
     parser.add_argument("--stride", type=int, default=15,
                         help="Annotate every Nth frame, starting with frame 0 (default: 15)")
