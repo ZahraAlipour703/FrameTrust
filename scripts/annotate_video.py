@@ -90,6 +90,20 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def normalize_display_click(
+    x: int, y: int, display_width: int, display_height: int
+) -> tuple[float, float]:
+    """Convert a click on the displayed preview into normalized image coordinates."""
+    if display_width < 1 or display_height < 1:
+        raise ValueError("display_width and display_height must be positive")
+    clipped_x = min(max(int(x), 0), display_width - 1)
+    clipped_y = min(max(int(y), 0), display_height - 1)
+    return (
+        clipped_x / max(display_width - 1, 1),
+        clipped_y / max(display_height - 1, 1),
+    )
+
+
 def annotate_frame(
     frame: np.ndarray,
     frame_index: int,
@@ -99,6 +113,13 @@ def annotate_frame(
 ) -> tuple[list[dict[str, int | float | str]], bool]:
     """Return annotations for one frame and whether the user requested exit."""
     height, width = frame.shape[:2]
+    # Render a fixed-size preview so mouse coordinates match the image shown
+    # on screen. Coordinates are normalized in preview space, which preserves
+    # normalized image coordinates because the preview keeps the same aspect ratio.
+    preview_scale = min(1.0, 1100.0 / width, 650.0 / height)
+    display_width = max(1, int(round(width * preview_scale)))
+    display_height = max(1, int(round(height * preview_scale)))
+    interpolation = cv2.INTER_AREA if preview_scale < 1.0 else cv2.INTER_LINEAR
     cursor = 0
     picked: dict[int, dict[str, int | float | str]] = {}
     state: dict[str, tuple[int, int] | None] = {"click": None}
@@ -131,17 +152,17 @@ def annotate_frame(
             joint_index, joint_name = joints[cursor]
             prompt = "Click joint | S: not visible | U: undo | Q: save and quit"
 
-        display = frame.copy()
+        display = cv2.resize(frame, (display_width, display_height), interpolation=interpolation)
         for saved in picked.values():
             if int(saved["visible"]) == 1:
-                px = int(float(saved["x"]) * max(width - 1, 1))
-                py = int(float(saved["y"]) * max(height - 1, 1))
+                px = int(float(saved["x"]) * max(display_width - 1, 1))
+                py = int(float(saved["y"]) * max(display_height - 1, 1))
                 cv2.circle(display, (px, py), 5, (0, 215, 255), -1)
                 cv2.putText(
                     display, str(saved["joint_name"]), (px + 5, py - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 215, 255), 1, cv2.LINE_AA,
                 )
-        cv2.rectangle(display, (0, 0), (width, min(86, height)), (20, 20, 20), -1)
+        cv2.rectangle(display, (0, 0), (display_width, min(86, display_height)), (20, 20, 20), -1)
         cv2.putText(
             display, f"Frame {frame_index} | Label: {joint_name}",
             (10, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 1, cv2.LINE_AA,
@@ -163,7 +184,7 @@ def annotate_frame(
             px, py = click
             picked[joint_index] = row_for(
                 joint_index, joint_name,
-                px / max(width - 1, 1), py / max(height - 1, 1), 1,
+                *normalize_display_click(px, py, display_width, display_height), 1,
             )
             cursor += 1
         elif not complete and key == ord("s"):
@@ -194,7 +215,7 @@ def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: in
         fps = 30.0
 
     window_name = "FrameTrust — manual ground-truth annotation"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     records: list[dict[str, int | float | str]] = []
     frame_index = 0
     stop = False
