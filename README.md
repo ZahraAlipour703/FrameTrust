@@ -85,6 +85,16 @@ Missing predictions count as PCK failures; coverage is reported so the error amo
 - Preserve a clip-level split if tuning thresholds: choose thresholds on development clips and report final metrics on held-out clips.
 - If you need ground-truth accuracy claims, evaluate against manually annotated landmarks or a dataset with appropriate ground-truth labels. The clean model's outputs are **not** ground truth.
 
+## Smoothing-strength ablation (reuse existing predictions)
+
+After an annotated run, compare the default confidence-aware smoother with weaker smoothing settings without re-running MediaPipe inference:
+
+```powershell
+python scripts/sweep_repair.py --landmarks-dir outputs/annotated_upper_body_v2 --ground-truth data/annotations_upper_body_v2.csv --profile upper_body --out outputs/repair_sweep_upper_body.csv
+```
+
+The sweep reports temporal jitter only for the selected anatomical profile, alongside ground-truth error, prediction coverage, and PCK. It evaluates the current smoothing strengths (`alpha_low=0.20`, `alpha_high=0.75`) and three progressively weaker-smoothing settings. Treat this as an exploratory ablation; five labeled frames from one clip are not enough to claim general performance. Prefer settings that reduce profile-specific jitter without worsening manual-label error or PCK, then validate the selected setting on more labeled frames or other clips.
+
 ## Limitations
 
 - The default occlusion is a synthetic black rectangle, not realistic object/person occlusion.
