@@ -51,7 +51,7 @@ First create annotations:
 python scripts/annotate_video.py --video path\to\your_video.mp4 --out data\annotations.csv --stride 15 --max-frames 300
 ```
 
-In the annotation window, click the requested landmark if it is visible; press `s` only when that landmark is genuinely out of frame or occluded, `u` to undo the previous point, and `Enter` to accept a completed frame. Press `q` to save and quit early. The squat profile focuses evaluation on lower-body pose reliability, not overall full-body accuracy. The CSV stores normalized image coordinates in [0, 1], original frame indices, MediaPipe landmark indices, and visibility labels. Use the same original video for annotation and evaluation. Only manually labeled points are used; landmarks not reached before quitting are not treated as invisible.
+In the annotation window, click the requested landmark if it is visible; press `s` only when that landmark is genuinely out of frame or occluded, `u` to undo the previous point, and `Enter` to accept a completed frame. Press `q` to save and quit early. To resume on later sampled frames without redoing earlier labels, use `--start-frame 60` with a separate output CSV; the start frame must align with the stride. The squat profile focuses evaluation on lower-body pose reliability, not overall full-body accuracy. The CSV stores normalized image coordinates in [0, 1], original frame indices, MediaPipe landmark indices, and visibility labels. Use the same original video for annotation and evaluation. Only manually labeled points are used; landmarks not reached before quitting are not treated as invisible.
 
 Then run the experiment with those labels:
 

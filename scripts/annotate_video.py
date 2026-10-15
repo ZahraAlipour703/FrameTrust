@@ -74,12 +74,16 @@ def parse_args() -> argparse.Namespace:
         help="Landmark set: squat=lower body (default); upper_body=nose/shoulders/elbows/wrists; full_body=13 landmarks",
     )
     parser.add_argument("--stride", type=int, default=15,
-                        help="Annotate every Nth frame, starting with frame 0 (default: 15)")
+                        help="Annotate every Nth frame (default: 15)")
+    parser.add_argument("--start-frame", type=int, default=0,
+                        help="First frame index eligible for annotation; must align with stride (default: 0)")
     parser.add_argument("--max-frames", type=int, default=300,
                         help="Inspect only the first N video frames; use 0 for the full video (default: 300)")
     args = parser.parse_args()
     if args.stride < 1:
         parser.error("--stride must be >= 1")
+    if args.start_frame < 0:
+        parser.error("--start-frame must be >= 0")
     if args.max_frames < 0:
         parser.error("--max-frames must be >= 0")
     args.max_frames = None if args.max_frames == 0 else args.max_frames
@@ -179,7 +183,7 @@ def annotate_frame(
     return current_rows, should_quit
 
 
-def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: int | None, joints: list[tuple[int, str]]) -> int:
+def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: int | None, joints: list[tuple[int, str]], start_frame: int = 0) -> int:
     if not video_path.is_file():
         raise FileNotFoundError(f"Video file not found: {video_path}")
     cap = cv2.VideoCapture(str(video_path))
@@ -201,7 +205,7 @@ def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: in
                 break
             if max_frames is not None and frame_index >= max_frames:
                 break
-            if frame_index % stride == 0:
+            if frame_index >= start_frame and frame_index % stride == 0:
                 frame_rows, stop = annotate_frame(
                     frame, frame_index, frame_index / fps, window_name, joints
                 )
@@ -223,4 +227,4 @@ def annotate_video(video_path: Path, out_path: Path, stride: int, max_frames: in
 
 if __name__ == "__main__":
     args = parse_args()
-    annotate_video(args.video, args.out, args.stride, args.max_frames, JOINT_PROFILES[args.profile])
+    annotate_video(args.video, args.out, args.stride, args.max_frames, JOINT_PROFILES[args.profile], args.start_frame)
