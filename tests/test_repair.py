@@ -38,3 +38,35 @@ def test_metrics_behaviour():
 def test_shape_validation():
     with pytest.raises(ValueError):
         interpolate_missing(np.zeros((3, 2)), np.zeros((3, 2)))
+
+
+def test_symmetric_smoother_preserves_linear_motion():
+    from frametrust.repair import confidence_aware_symmetric_repair
+
+    coords = np.array([
+        [[0.0, 0.0, 0.0]],
+        [[1.0, 0.0, 0.0]],
+        [[2.0, 0.0, 0.0]],
+    ])
+    confidence = np.ones((3, 1))
+    smoothed = confidence_aware_symmetric_repair(
+        coords, confidence, threshold=0.35, alpha_low=0.2, alpha_high=0.2
+    )
+    # At the middle frame, the centered neighbor average equals the true
+    # coordinate on a constant-velocity trajectory (no one-sided phase lag).
+    assert np.allclose(smoothed[1, 0], coords[1, 0])
+
+
+def test_symmetric_smoother_reduces_single_frame_spike():
+    from frametrust.repair import confidence_aware_symmetric_repair
+
+    coords = np.array([
+        [[0.0, 0.0, 0.0]],
+        [[1.0, 0.0, 0.0]],
+        [[0.0, 0.0, 0.0]],
+    ])
+    confidence = np.ones((3, 1))
+    smoothed = confidence_aware_symmetric_repair(
+        coords, confidence, threshold=0.35, alpha_low=0.2, alpha_high=0.2
+    )
+    assert smoothed[1, 0, 0] == pytest.approx(0.2)

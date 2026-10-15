@@ -68,3 +68,43 @@ def _validate_shapes(coords: np.ndarray, confidence: np.ndarray) -> None:
         raise ValueError("confidence must have shape [frames, joints]")
     if coords.shape[0] == 0 or coords.shape[1] == 0:
         raise ValueError("coords must contain at least one frame and one joint")
+
+
+def confidence_aware_symmetric_repair(
+    coords: np.ndarray,
+    confidence: np.ndarray,
+    threshold: float = 0.35,
+    alpha_low: float = 0.20,
+    alpha_high: float = 0.75,
+) -> np.ndarray:
+    """Interpolate unreliable observations, then apply centered temporal smoothing.
+
+    Unlike confidence_aware_repair, this uses the average of the previous and
+    next frame rather than only the previous frame. It is an offline smoother
+    (not causal): centered smoothing can reduce phase lag on moving trajectories.
+    High-confidence observations receive a larger weight; low-confidence
+    observations receive a smaller weight. It is a baseline to evaluate, not a
+    guarantee of improved accuracy.
+    """
+    if not (0 < alpha_low <= alpha_high <= 1):
+        raise ValueError("Require 0 < alpha_low <= alpha_high <= 1")
+    c = np.asarray(coords, dtype=float)
+    conf = np.asarray(confidence, dtype=float)
+    _validate_shapes(c, conf)
+    filled = interpolate_missing(c, conf, threshold=threshold)
+    out = filled.copy()
+    if out.shape[0] < 3:
+        return out
+
+    valid_conf = np.where(np.isfinite(conf), np.clip(conf, 0.0, 1.0), 0.0)
+    for t in range(1, out.shape[0] - 1):
+        alpha = alpha_low + (alpha_high - alpha_low) * valid_conf[t, :, None]
+        neighbors = 0.5 * (filled[t - 1] + filled[t + 1])
+        finite = (
+            np.isfinite(filled[t])
+            & np.isfinite(filled[t - 1])
+            & np.isfinite(filled[t + 1])
+        )
+        smoothed = alpha * filled[t] + (1.0 - alpha) * neighbors
+        out[t] = np.where(finite, smoothed, out[t])
+    return out

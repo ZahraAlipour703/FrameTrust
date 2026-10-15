@@ -21,7 +21,11 @@ if _SRC.exists() and str(_SRC) not in sys.path:
 from frametrust.ground_truth import evaluate_ground_truth, read_ground_truth_csv
 from frametrust.metrics import temporal_jitter
 from frametrust.pose import frame_to_arrays
-from frametrust.repair import confidence_aware_repair, interpolate_missing
+from frametrust.repair import (
+    confidence_aware_repair,
+    confidence_aware_symmetric_repair,
+    interpolate_missing,
+)
 
 PROFILES = {
     "upper_body": [0, 11, 12, 13, 14, 15, 16],
@@ -105,6 +109,15 @@ def main() -> int:
                 alpha_high=alpha_high,
             )
             estimates.append((name, alpha_low, alpha_high, estimate))
+            symmetric_name = f"symmetric_{name}"
+            symmetric_estimate = confidence_aware_symmetric_repair(
+                coords,
+                confidence,
+                threshold=args.threshold,
+                alpha_low=alpha_low,
+                alpha_high=alpha_high,
+            )
+            estimates.append((symmetric_name, alpha_low, alpha_high, symmetric_estimate))
 
         for method, alpha_low, alpha_high, estimate in estimates:
             scores = evaluate_ground_truth(
