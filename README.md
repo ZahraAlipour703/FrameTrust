@@ -93,7 +93,8 @@ After an annotated run, compare the default confidence-aware smoother with weake
 python scripts/sweep_repair.py --landmarks-dir outputs/annotated_upper_body_v2 --ground-truth data/annotations_upper_body_v2.csv --profile upper_body --out outputs/repair_sweep_upper_body.csv
 ```
 
-The sweep reports temporal jitter only for the selected anatomical profile, alongside ground-truth error, prediction coverage, and PCK. It evaluates the current smoothing strengths (`alpha_low=0.20`, `alpha_high=0.75`) and three progressively weaker-smoothing settings. Treat this as an exploratory ablation; five labeled frames from one clip are not enough to claim general performance. Prefer settings that reduce profile-specific jitter without worsening manual-label error or PCK, then validate the selected setting on more labeled frames or other clips.
+The sweep reports temporal jitter only for the selected anatomical profile, alongside ground-truth error, prediction coverage, and PCK.
+The smoothing sweep also reports common-support localization error/PCK: these metrics compare each repair output only on labeled joints where the raw detector had finite coordinates. Overall ground-truth PCK and prediction coverage remain reported separately to account for repaired/missing predictions. It evaluates the current smoothing strengths (`alpha_low=0.20`, `alpha_high=0.75`) and three progressively weaker-smoothing settings. Treat this as an exploratory ablation; five labeled frames from one clip are not enough to claim general performance. Prefer settings that reduce profile-specific jitter without worsening manual-label error or PCK, then validate the selected setting on more labeled frames or other clips.
 
 ## Limitations
 

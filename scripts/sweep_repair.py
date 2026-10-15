@@ -74,6 +74,70 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def evaluate_common_support_metrics(
+    annotations: pd.DataFrame,
+    frame_indices: object,
+    raw_estimate: object,
+    estimate: object,
+    pck_fraction: float = 0.1,
+) -> dict[str, float | int]:
+    """Compare a method and raw output on the same raw-detected labeled points.
+
+    This avoids treating the raw method's missing predictions as though they were
+    simply absent from its mean localization error while repaired methods are
+    scored on additionally interpolated points. Overall PCK and coverage from
+    evaluate_ground_truth remain the all-label metrics.
+    """
+    import numpy as np
+
+    indices = np.asarray(frame_indices, dtype=int)
+    raw = np.asarray(raw_estimate, dtype=float)
+    pred = np.asarray(estimate, dtype=float)
+    row_for_frame = {int(frame_id): row for row, frame_id in enumerate(indices)}
+    visible = annotations[
+        (annotations["visible"] == 1)
+        & annotations["frame_index"].isin(row_for_frame)
+    ]
+
+    total = 0
+    detected = 0
+    correct = 0
+    image_errors: list[float] = []
+    body_errors: list[float] = []
+    for frame_id, group in visible.groupby("frame_index", sort=True):
+        points = group[["x", "y"]].to_numpy(dtype=float)
+        if len(points) < 2:
+            continue
+        body_scale = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+        if not np.isfinite(body_scale) or body_scale <= 1e-12:
+            continue
+        row = row_for_frame[int(frame_id)]
+        for item in group.itertuples(index=False):
+            joint = int(item.joint_index)
+            raw_xy = raw[row, joint, :2]
+            if not np.isfinite(raw_xy).all():
+                continue
+            total += 1
+            pred_xy = pred[row, joint, :2]
+            if not np.isfinite(pred_xy).all():
+                continue
+            detected += 1
+            err = float(np.linalg.norm(pred_xy - np.array([item.x, item.y], dtype=float)))
+            body_err = err / body_scale
+            image_errors.append(err)
+            body_errors.append(body_err)
+            if body_err <= pck_fraction:
+                correct += 1
+
+    return {
+        "gt_common_support_points": int(total),
+        "gt_common_support_coverage": float(detected / total) if total else float("nan"),
+        "gt_common_support_mean_error_normalized_image": float(np.mean(image_errors)) if image_errors else float("nan"),
+        "gt_common_support_mean_error_body_diagonal": float(np.mean(body_errors)) if body_errors else float("nan"),
+        "gt_common_support_pck": float(correct / total) if total else float("nan"),
+    }
+
+
 def main() -> int:
     args = parse_args()
     ground_truth = read_ground_truth_csv(args.ground_truth)
@@ -137,6 +201,13 @@ def main() -> int:
                     estimate[:, target_joints, :]
                 ),
                 **scores,
+                **evaluate_common_support_metrics(
+                    ground_truth,
+                    frame_indices,
+                    coords,
+                    estimate,
+                    pck_fraction=args.pck_fraction,
+                ),
             })
 
     result = pd.DataFrame(rows)
@@ -146,6 +217,8 @@ def main() -> int:
         "corruption", "method",
         "profile_temporal_jitter_normalized_per_frame2",
         "gt_prediction_coverage", "gt_mean_error_body_diagonal", "gt_pck",
+        "gt_common_support_points", "gt_common_support_coverage",
+        "gt_common_support_mean_error_body_diagonal", "gt_common_support_pck",
     ]
     print(result[columns].to_string(index=False))
     print(f"Saved smoothing sweep to {args.out}")
