@@ -381,21 +381,89 @@ def score_method(
     common_norm_errors = err_torso[common]
     common_correct20 = int((common_norm_errors <= 0.20).sum())
 
-    # Isolate the subset with low-confidence/missing raw observations.
-    unreliable_raw = (~raw_finite) | (~np.isfinite(raw_conf)) | (raw_conf < confidence_threshold)
+    # Separate raw observations into mutually exclusive reliability strata.
+    # Missing coordinates take precedence over low reported confidence.
+    raw_missing_state = ~raw_finite
+    raw_low_conf_finite_state = (
+        raw_finite
+        & (~np.isfinite(raw_conf) | (raw_conf < confidence_threshold))
+    )
+    raw_initially_reliable_state = (
+        raw_finite
+        & np.isfinite(raw_conf)
+        & (raw_conf >= confidence_threshold)
+    )
+
+    raw_err_px, raw_err_torso = error_arrays(
+        raw, gt_xy, valid_gt, torso_scale
+    )
+
+    # Overall false correction: a prediction correct at PCK@0.20 becomes
+    # incorrect or missing after the evaluated method.
+    raw_correct = (
+        valid_gt & raw_finite & np.isfinite(raw_err_torso)
+        & (raw_err_torso <= 0.20)
+    )
+    harmed_raw_correct = raw_correct & (
+        ~pred_finite | ~np.isfinite(err_torso) | (err_torso > 0.20)
+    )
+    n_raw_correct = int(raw_correct.sum())
+    false_correction_rate = (
+        float(harmed_raw_correct.sum() / n_raw_correct)
+        if n_raw_correct else float("nan")
+    )
+
+    def score_raw_stratum(prefix: str, raw_state: np.ndarray):
+        # The target set is defined only by raw predictions and GT validity.
+        # It remains fixed across all evaluated methods.
+        target = valid_gt & raw_state
+        n_target = int(target.sum())
+        detected = target & pred_finite & np.isfinite(err_torso)
+        correct = detected & (err_torso <= 0.20)
+
+        source_correct = (
+            target & raw_finite & np.isfinite(raw_err_torso)
+            & (raw_err_torso <= 0.20)
+        )
+        harmed = source_correct & (
+            ~pred_finite | ~np.isfinite(err_torso) | (err_torso > 0.20)
+        )
+        n_source_correct = int(source_correct.sum())
+        errors = err_torso[detected]
+
+        return {
+            f"{prefix}_target_points": n_target,
+            f"{prefix}_method_coverage": (
+                float(detected.sum() / n_target) if n_target else float("nan")
+            ),
+            f"{prefix}_method_mean_error_torso_norm_detected": (
+                float(np.mean(errors)) if errors.size else float("nan")
+            ),
+            f"{prefix}_method_pck_torso_0.20": (
+                float(correct.sum() / n_target) if n_target else float("nan")
+            ),
+            f"{prefix}_source_correct_points": n_source_correct,
+            f"{prefix}_false_correction_rate": (
+                float(harmed.sum() / n_source_correct)
+                if n_source_correct else float("nan")
+            ),
+        }
+
+    stratum_scores = {}
+    for prefix, state in [
+        ("missing_raw", raw_missing_state),
+        ("low_conf_finite_raw", raw_low_conf_finite_state),
+        ("initially_reliable_raw", raw_initially_reliable_state),
+    ]:
+        stratum_scores.update(score_raw_stratum(prefix, state))
+
+    # Preserve the combined repair-target metrics for continuity with prior
+    # outputs; the disjoint strata above are the more informative analysis.
+    unreliable_raw = raw_missing_state | raw_low_conf_finite_state
     recovery_target = valid_gt & unreliable_raw
-    recovery_detected = recovery_target & pred_finite
+    recovery_detected = recovery_target & pred_finite & np.isfinite(err_torso)
     recovery_errors = err_torso[recovery_detected]
     recovery_n = int(recovery_target.sum())
-
-    # False correction: raw output was within PCK-torso@0.2, but this method's
-    # output moved it beyond threshold or made it missing. Reported on the same
-    # GT-valid points; raw method itself should have 0% by construction.
-    raw_err_px, raw_err_torso = error_arrays(raw, gt_xy, valid_gt, torso_scale)
-    raw_correct = valid_gt & raw_finite & np.isfinite(raw_err_torso) & (raw_err_torso <= 0.20)
-    harmed_raw_correct = raw_correct & (~pred_finite | ~np.isfinite(err_torso) | (err_torso > 0.20))
-    n_raw_correct = int(raw_correct.sum())
-    false_correction_rate = float(harmed_raw_correct.sum() / n_raw_correct) if n_raw_correct else float("nan")
 
     # Trajectory-fidelity metrics are computed on three adjacent GT-labeled
     # frames. Also provide a matched-triple comparison that includes only triples
@@ -452,6 +520,7 @@ def score_method(
         "repair_target_pck_torso_0.20": float(np.sum(recovery_errors <= 0.20) / recovery_n) if recovery_n else float("nan"),
         "raw_correct_points": n_raw_correct,
         "false_correction_rate": false_correction_rate,
+        **stratum_scores,
         "temporal_triples": triples,
         "temporal_jitter_torso_norm": float(np.sqrt(np.mean(np.square(pred_jitter)))) if pred_jitter else float("nan"),
         "gt_acceleration_error_torso_norm": float(np.mean(gt_accel_errors)) if gt_accel_errors else float("nan"),
@@ -585,7 +654,20 @@ def main() -> int:
         "pck_torso_0.20", "common_support_mean_error_torso_norm",
         "common_support_pck_torso_0.20", "repair_target_coverage",
         "repair_target_mean_error_torso_norm", "repair_target_pck_torso_0.20",
-        "false_correction_rate", "temporal_jitter_torso_norm",
+        "false_correction_rate",
+        "missing_raw_target_points", "missing_raw_method_coverage",
+        "missing_raw_method_pck_torso_0.20",
+        "low_conf_finite_raw_target_points",
+        "low_conf_finite_raw_method_coverage",
+        "low_conf_finite_raw_method_mean_error_torso_norm_detected",
+        "low_conf_finite_raw_method_pck_torso_0.20",
+        "low_conf_finite_raw_false_correction_rate",
+        "initially_reliable_raw_target_points",
+        "initially_reliable_raw_method_coverage",
+        "initially_reliable_raw_method_mean_error_torso_norm_detected",
+        "initially_reliable_raw_method_pck_torso_0.20",
+        "initially_reliable_raw_false_correction_rate",
+        "temporal_jitter_torso_norm",
         "gt_acceleration_error_torso_norm", "temporal_jitter_torso_norm_common_raw",
         "gt_acceleration_error_torso_norm_common_raw",
     ]
@@ -605,7 +687,19 @@ def main() -> int:
     delta_metrics = [
         "prediction_coverage", "mean_error_torso_norm_detected", "pck_torso_0.20",
         "common_support_mean_error_torso_norm", "common_support_pck_torso_0.20",
-        "repair_target_pck_torso_0.20", "temporal_jitter_torso_norm_common_raw",
+        "repair_target_pck_torso_0.20",
+        "false_correction_rate",
+        "missing_raw_method_coverage",
+        "missing_raw_method_pck_torso_0.20",
+        "low_conf_finite_raw_method_coverage",
+        "low_conf_finite_raw_method_mean_error_torso_norm_detected",
+        "low_conf_finite_raw_method_pck_torso_0.20",
+        "low_conf_finite_raw_false_correction_rate",
+        "initially_reliable_raw_method_coverage",
+        "initially_reliable_raw_method_mean_error_torso_norm_detected",
+        "initially_reliable_raw_method_pck_torso_0.20",
+        "initially_reliable_raw_false_correction_rate",
+        "temporal_jitter_torso_norm_common_raw",
         "gt_acceleration_error_torso_norm_common_raw",
     ]
     for _, row in result[result["method"] != "raw"].iterrows():
@@ -714,6 +808,8 @@ def main() -> int:
             "applied_after_linear_interpolation_of_low_confidence_or_missing_points": True,
         },
         "missing_observation_policy": f"skip pose inference when t>0 and t % {args.gap_every} == 0; retain GT frame/time step",
+        "raw_observation_strata": "Disjoint groups: missing coordinates; finite coordinates below the confidence threshold; finite coordinates at or above the threshold.",
+        "false_correction_rate_definition": "Among GT-valid raw predictions correct at torso-normalized PCK@0.20, fraction made incorrect or missing by the evaluated method.",
         "primary_pck_definition": "For each frame, torso diameter is Euclidean distance between visible in-bounds Penn Action left shoulder and right hip (selected joint indices 0 and 7 after excluding head). Score visible in-bounds mapped ground-truth joints only in frames where this scale is valid. Prediction failures count as incorrect. Report PCK thresholds 0.05, 0.10, 0.20 of torso diameter.",
         "secondary_error_normalization": "per-frame Penn Action bounding-box diagonal, interpreted as [x_min,y_min,x_max,y_max] after inspecting overlays",
         "sequence_level_summary": True,
@@ -735,7 +831,14 @@ def main() -> int:
         "condition", "method", "n_sequences", "prediction_coverage_mean",
         "mean_error_torso_norm_detected_mean", "pck_torso_0.20_mean",
         "common_support_mean_error_torso_norm_mean",
-        "false_correction_rate_mean", "temporal_jitter_torso_norm_common_raw_mean",
+        "false_correction_rate_mean",
+        "missing_raw_method_coverage_mean",
+        "missing_raw_method_pck_torso_0.20_mean",
+        "low_conf_finite_raw_method_pck_torso_0.20_mean",
+        "low_conf_finite_raw_false_correction_rate_mean",
+        "initially_reliable_raw_method_pck_torso_0.20_mean",
+        "initially_reliable_raw_false_correction_rate_mean",
+        "temporal_jitter_torso_norm_common_raw_mean",
         "gt_acceleration_error_torso_norm_common_raw_mean",
     ]
     print(summary[summary_columns].to_string(index=False))
