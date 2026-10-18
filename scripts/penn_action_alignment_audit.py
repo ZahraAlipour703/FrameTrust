@@ -18,7 +18,10 @@ import pandas as pd
 from scipy.io import loadmat
 
 PENN_JOINTS = np.arange(1, 13, dtype=int)
-MEDIAPIPE_JOINTS = np.array([11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28])
+# Empirical Penn Action alignment correction: reverse each MediaPipe
+# left/right pair to match the annotated ground-truth correspondence.
+# This is a landmark-mapping correction, not a model change.
+MEDIAPIPE_JOINTS = np.array([12, 11, 14, 13, 16, 15, 24, 23, 26, 25, 28, 27])
 JOINT_NAMES = [
     "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
     "left_wrist", "right_wrist", "left_hip", "right_hip",
