@@ -202,10 +202,13 @@ def main() -> int:
             dest = overlay_dir / f"seq_{seq}_frame_{int(t):04d}.jpg"
             if not cv2.imwrite(str(dest), overlay):
                 raise RuntimeError(f"Could not write overlay {dest}")
+        def fmt(value):
+            return f"{value:.3f}" if value is not None and np.isfinite(value) else "NA"
+
         print(
-            f"  coverage={summary['prediction_coverage']:.3f}; "
-            f"mean normalized error={summary['mean_error_torso_normalized_detected']:.3f}; "
-            f"PCK@0.20={summary['pck_torso_0.20']:.3f}; overlays={len(frame_ids)}",
+            f"  coverage={fmt(summary['prediction_coverage'])}; "
+            f"mean normalized error={fmt(summary['mean_error_torso_normalized_detected'])}; "
+            f"PCK@0.20={fmt(summary['pck_torso_0.20'])}; overlays={len(frame_ids)}",
             flush=True,
         )
 
