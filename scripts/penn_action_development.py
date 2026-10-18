@@ -2,8 +2,9 @@
 """Action-stratified Penn Action development evaluation for FrameTrust.
 
 Runs only QC-approved sequences in Penn Action's official training split.
-Compares raw MediaPipe predictions, linear interpolation, FrameTrust's
-confidence-aware repair, One Euro filtering, and Savitzky-Golay smoothing.
+Compares raw MediaPipe predictions, confidence-thresholded interpolation,
+a missing-only interpolation baseline, FrameTrust's confidence-aware repair,
+One Euro filtering, and Savitzky-Golay smoothing.
 
 This is a development experiment, not a final test-set evaluation.
 """
@@ -40,7 +41,7 @@ JOINT_NAMES = [
     "left_knee", "right_knee", "left_ankle", "right_ankle",
 ]
 CONDITIONS = ["clean", "blur", "low_resolution", "occlusion", "missing_pose_observations"]
-METHODS = ["raw", "linear_interpolation", "confidence_aware", "one_euro", "savgol"]
+METHODS = ["raw", "linear_interpolation", "linear_missing_only", "confidence_aware", "one_euro", "savgol"]
 
 
 def as_scalar(value: Any) -> Any:
@@ -300,6 +301,48 @@ def savgol_filter_pose(
     return out
 
 
+def interpolate_missing_only(
+    coords: np.ndarray,
+    confidence: np.ndarray,
+    threshold: float = 0.35,
+) -> np.ndarray:
+    """Fill non-finite coordinate components without changing finite values.
+
+    Only high-confidence, fully finite observations are used as anchors. Existing
+    finite coordinates are preserved exactly, including finite low-confidence
+    observations. As with numpy.interp, gaps before/after available anchors are
+    filled with the nearest anchor value; callers should interpret long gaps with
+    care.
+    """
+    c = np.asarray(coords, dtype=float)
+    conf = np.asarray(confidence, dtype=float)
+    if c.ndim != 3 or conf.shape != c.shape[:2]:
+        raise ValueError(
+            "Expected coords [frames, joints, dims] and "
+            "confidence [frames, joints]"
+        )
+
+    out = c.copy()
+    frames = np.arange(c.shape[0])
+    for j in range(c.shape[1]):
+        finite_point = np.isfinite(c[:, j, :]).all(axis=1)
+        good = (
+            finite_point
+            & np.isfinite(conf[:, j])
+            & (conf[:, j] >= threshold)
+        )
+        if not good.any():
+            continue
+
+        for d in range(c.shape[2]):
+            missing = ~np.isfinite(c[:, j, d])
+            if not missing.any():
+                continue
+            filled = np.interp(frames, frames[good], c[good, j, d])
+            out[missing, j, d] = filled[missing]
+    return out
+
+
 def ground_truth_masks_and_scales(
     gt_xy: np.ndarray, gt_vis: np.ndarray, bbox_xyxy: np.ndarray, sizes: np.ndarray,
 ) -> dict[str, np.ndarray]:
@@ -413,7 +456,7 @@ def score_method(
         if n_raw_correct else float("nan")
     )
 
-    def score_raw_stratum(prefix: str, raw_state: np.ndarray):
+    def score_raw_stratum(prefix: str, raw_state: np.ndarray) -> dict[str, float | int]:
         # The target set is defined only by raw predictions and GT validity.
         # It remains fixed across all evaluated methods.
         target = valid_gt & raw_state
@@ -449,7 +492,7 @@ def score_method(
             ),
         }
 
-    stratum_scores = {}
+    stratum_scores: dict[str, float | int] = {}
     for prefix, state in [
         ("missing_raw", raw_missing_state),
         ("low_conf_finite_raw", raw_low_conf_finite_state),
@@ -610,6 +653,9 @@ def main() -> int:
                 "linear_interpolation": interpolate_missing(
                     raw, conf, threshold=args.confidence_threshold
                 ),
+                "linear_missing_only": interpolate_missing_only(
+                    raw, conf, threshold=args.confidence_threshold
+                ),
                 "confidence_aware": confidence_aware_repair(
                     raw, conf, threshold=args.confidence_threshold
                 ),
@@ -656,14 +702,13 @@ def main() -> int:
         "repair_target_mean_error_torso_norm", "repair_target_pck_torso_0.20",
         "false_correction_rate",
         "missing_raw_target_points", "missing_raw_method_coverage",
-        "missing_raw_method_pck_torso_0.20",
-        "low_conf_finite_raw_target_points",
-        "low_conf_finite_raw_method_coverage",
+        "missing_raw_method_mean_error_torso_norm_detected",
+        "missing_raw_method_pck_torso_0.20", "missing_raw_false_correction_rate",
+        "low_conf_finite_raw_target_points", "low_conf_finite_raw_method_coverage",
         "low_conf_finite_raw_method_mean_error_torso_norm_detected",
         "low_conf_finite_raw_method_pck_torso_0.20",
         "low_conf_finite_raw_false_correction_rate",
-        "initially_reliable_raw_target_points",
-        "initially_reliable_raw_method_coverage",
+        "initially_reliable_raw_target_points", "initially_reliable_raw_method_coverage",
         "initially_reliable_raw_method_mean_error_torso_norm_detected",
         "initially_reliable_raw_method_pck_torso_0.20",
         "initially_reliable_raw_false_correction_rate",
@@ -687,10 +732,9 @@ def main() -> int:
     delta_metrics = [
         "prediction_coverage", "mean_error_torso_norm_detected", "pck_torso_0.20",
         "common_support_mean_error_torso_norm", "common_support_pck_torso_0.20",
-        "repair_target_pck_torso_0.20",
-        "false_correction_rate",
-        "missing_raw_method_coverage",
-        "missing_raw_method_pck_torso_0.20",
+        "repair_target_pck_torso_0.20", "false_correction_rate",
+        "missing_raw_method_coverage", "missing_raw_method_pck_torso_0.20",
+        "missing_raw_false_correction_rate",
         "low_conf_finite_raw_method_coverage",
         "low_conf_finite_raw_method_mean_error_torso_norm_detected",
         "low_conf_finite_raw_method_pck_torso_0.20",
@@ -810,6 +854,7 @@ def main() -> int:
         "missing_observation_policy": f"skip pose inference when t>0 and t % {args.gap_every} == 0; retain GT frame/time step",
         "raw_observation_strata": "Disjoint groups: missing coordinates; finite coordinates below the confidence threshold; finite coordinates at or above the threshold.",
         "false_correction_rate_definition": "Among GT-valid raw predictions correct at torso-normalized PCK@0.20, fraction made incorrect or missing by the evaluated method.",
+        "linear_missing_only_definition": "Fill only non-finite coordinate components using high-confidence, fully finite observations as interpolation anchors; preserve existing finite coordinate components exactly.",
         "primary_pck_definition": "For each frame, torso diameter is Euclidean distance between visible in-bounds Penn Action left shoulder and right hip (selected joint indices 0 and 7 after excluding head). Score visible in-bounds mapped ground-truth joints only in frames where this scale is valid. Prediction failures count as incorrect. Report PCK thresholds 0.05, 0.10, 0.20 of torso diameter.",
         "secondary_error_normalization": "per-frame Penn Action bounding-box diagonal, interpreted as [x_min,y_min,x_max,y_max] after inspecting overlays",
         "sequence_level_summary": True,
@@ -832,8 +877,7 @@ def main() -> int:
         "mean_error_torso_norm_detected_mean", "pck_torso_0.20_mean",
         "common_support_mean_error_torso_norm_mean",
         "false_correction_rate_mean",
-        "missing_raw_method_coverage_mean",
-        "missing_raw_method_pck_torso_0.20_mean",
+        "missing_raw_method_coverage_mean", "missing_raw_method_pck_torso_0.20_mean",
         "low_conf_finite_raw_method_pck_torso_0.20_mean",
         "low_conf_finite_raw_false_correction_rate_mean",
         "initially_reliable_raw_method_pck_torso_0.20_mean",
