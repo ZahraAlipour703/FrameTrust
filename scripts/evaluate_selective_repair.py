@@ -149,6 +149,10 @@ def main() -> int:
 
     result_rows: list[dict[str, Any]] = []
     choices_rows: list[dict[str, Any]] = []
+    prediction_rows: list[dict[str, Any]] = []
+    threshold_rows: list[dict[str, Any]] = []
+    # Diagnostic sweep only: do not select the reported threshold from this same sweep.
+    thresholds = sorted(set([0.0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.15, 0.20, float(args.min_predicted_gain)]))
     for condition in conditions:
         for heldout in selected:
             train_x: list[np.ndarray] = []
@@ -171,6 +175,12 @@ def main() -> int:
             predicted = predict_candidate_errors(model, item["features"])
             choices = select_candidates(predicted, args.min_predicted_gain)
             selected_pose = apply_candidate_choices(item["candidates"], choices, names)
+            actual_choice_errors = np.take_along_axis(item["errors"], choices[..., None], axis=-1)[..., 0]
+            oracle_choice = np.argmin(item["errors"], axis=-1)
+            best_predicted_repair = 1 + np.argmin(predicted[..., 1:], axis=-1)
+            best_predicted_gain = predicted[..., 0] - np.min(predicted[..., 1:], axis=-1)
+            best_actual_repair = 1 + np.argmin(item["errors"][..., 1:], axis=-1)
+            best_actual_gain = item["errors"][..., 0] - np.min(item["errors"][..., 1:], axis=-1)
             actual_errors, scoreable = candidate_error_targets(
                 {"selective": selected_pose}, item["gt_xy"], item["valid_gt"],
                 item["torso_scale"], ["selective"]
@@ -210,7 +220,44 @@ def main() -> int:
                         "raw_finite": bool(raw_finite[t, j]),
                         "selected_finite": bool(sel_finite[t, j]),
                         "scoreable_gt": bool(target[t, j]),
+                        "selected_actual_error": float(actual_choice_errors[t, j]),
+                        "oracle_best_candidate": names[int(oracle_choice[t, j])],
+                        "selected_matches_oracle": bool(choices[t, j] == oracle_choice[t, j]),
+                        "best_predicted_repair": names[int(best_predicted_repair[t, j])],
+                        "best_predicted_gain_vs_raw": float(best_predicted_gain[t, j]),
+                        "best_actual_repair": names[int(best_actual_repair[t, j])],
+                        "best_actual_gain_vs_raw": float(best_actual_gain[t, j]),
                     })
+                    for k, candidate_name in enumerate(names):
+                        prediction_rows.append({
+                            "sequence": heldout, "action": item["action"],
+                            "condition": condition, "frame": t, "joint": j,
+                            "candidate": candidate_name,
+                            "predicted_error_norm": float(predicted[t, j, k]),
+                            "actual_error_norm": float(item["errors"][t, j, k]),
+                            "scoreable_gt": bool(target[t, j]),
+                            "selected_by_default_margin": bool(choices[t, j] == k),
+                        })
+            # Out-of-fold risk/coverage diagnostics over fixed margins. These rows are
+            # descriptive; choosing the best margin here would require a separate
+            # nested validation layer to avoid optimistic threshold selection.
+            for margin in thresholds:
+                margin_choices = select_candidates(predicted, margin)
+                margin_pose = apply_candidate_choices(item["candidates"], margin_choices, names)
+                margin_errors = np.take_along_axis(item["errors"], margin_choices[..., None], axis=-1)[..., 0]
+                margin_finite = np.isfinite(margin_pose).all(axis=-1)
+                margin_coverage = float((target & margin_finite).sum() / n_target) if n_target else float("nan")
+                margin_pck = float(((margin_errors <= 0.20) & target).sum() / n_target) if n_target else float("nan")
+                margin_harmed = target & raw_finite & (raw_error <= 0.20) & (~margin_finite | (margin_errors > 0.20))
+                margin_raw_correct = int((target & raw_finite & (raw_error <= 0.20)).sum())
+                threshold_rows.append({
+                    "sequence": heldout, "action": item["action"], "condition": condition,
+                    "min_predicted_gain": margin, "n_scored_points": n_target,
+                    "pck_torso_0.20": margin_pck, "coverage": margin_coverage,
+                    "repair_fraction": float((margin_choices != 0).mean()),
+                    "false_correction_rate": float(margin_harmed.sum() / margin_raw_correct) if margin_raw_correct else float("nan"),
+                    "mean_error_norm": float(np.mean(margin_errors[target])) if n_target else float("nan"),
+                })
             print(
                 f"  {condition}: {heldout} PCK raw={raw_pck:.3f}, "
                 f"selective={pck:.3f}, repair={float((choices != 0).mean()):.1%}",
@@ -220,6 +267,18 @@ def main() -> int:
     detail = pd.DataFrame(result_rows)
     detail.to_csv(out / "sequence_condition_metrics.csv", index=False)
     pd.DataFrame(choices_rows).to_csv(out / "per_point_choices.csv", index=False)
+    pd.DataFrame(prediction_rows).to_csv(out / "out_of_fold_candidate_predictions.csv", index=False)
+    threshold_detail = pd.DataFrame(threshold_rows)
+    threshold_detail.to_csv(out / "threshold_sweep_per_sequence.csv", index=False)
+    threshold_summary = threshold_detail.groupby(["condition", "min_predicted_gain"], as_index=False).agg(
+        n_sequences=("sequence", "nunique"),
+        pck_mean=("pck_torso_0.20", "mean"),
+        coverage_mean=("coverage", "mean"),
+        repair_fraction_mean=("repair_fraction", "mean"),
+        false_correction_rate_mean=("false_correction_rate", "mean"),
+        mean_error_norm=("mean_error_norm", "mean"),
+    )
+    threshold_summary.to_csv(out / "threshold_sweep_summary.csv", index=False)
     summary = detail.groupby("condition", as_index=False).agg(
         n_sequences=("sequence", "nunique"),
         raw_pck_torso_0_20_mean=("raw_pck_torso_0.20", "mean"),
@@ -250,6 +309,8 @@ def main() -> int:
             "Selector is a linear error predictor, not a calibrated probability of repair success.",
             "Features use both neighboring frames and are therefore offline/non-causal.",
             "Torso-scale-scored points only; bbox-normalized metrics are not included in this selector script.",
+            "The threshold sweep reuses out-of-fold predictions; it is descriptive and must not be used to claim an unbiased optimum threshold without nested validation.",
+            "Candidate prediction rows expose calibration/ranking errors and oracle agreement for audit.",
             "The per-sequence output is exploratory and should not be treated as a confirmatory statistical test.",
         ],
         "runtime_seconds": round(time.time() - start, 2),
