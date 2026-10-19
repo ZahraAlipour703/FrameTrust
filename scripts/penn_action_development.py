@@ -379,7 +379,9 @@ def ground_truth_masks_and_scales(
         if np.isfinite([x1, y1, x2, y2]).all() and x2 > x1 and y2 > y1:
             bbox_scale[t] = float(np.hypot(x2 - x1, y2 - y1))
     scored = valid & np.isfinite(torso_scale[:, None])
+    valid_bbox_gt = valid & np.isfinite(bbox_scale[:, None]) & (bbox_scale[:, None] > 1e-6)
     return {"valid_gt": scored, "valid_gt_any_scale": valid,
+            "valid_gt_bbox": valid_bbox_gt,
             "torso_scale": torso_scale, "bbox_diag": bbox_scale}
 
 
@@ -398,8 +400,9 @@ def error_arrays(pred: np.ndarray, gt_xy: np.ndarray, valid_gt: np.ndarray,
 
 def score_method(
     pred: np.ndarray, raw: np.ndarray, raw_conf: np.ndarray, gt_xy: np.ndarray,
-    valid_gt: np.ndarray, torso_scale: np.ndarray, bbox_diag: np.ndarray,
-    confidence_threshold: float,
+    valid_gt: np.ndarray, valid_gt_bbox: np.ndarray, torso_scale: np.ndarray,
+    bbox_diag: np.ndarray, confidence_threshold: float,
+    gap_frames: np.ndarray | None = None,
 ) -> dict[str, float | int]:
     n_gt = int(valid_gt.sum())
     pred_finite = np.isfinite(pred).all(axis=-1)
@@ -415,12 +418,19 @@ def score_method(
         correct = valid_gt & pred_finite & np.isfinite(err_torso) & (err_torso <= threshold)
         pcks[f"pck_torso_{threshold:.2f}"] = float(correct.sum() / n_gt) if n_gt else float("nan")
 
-    # Secondary normalized error by the annotation bounding-box diagonal.
-    bbox_valid = valid_gt & pred_finite & np.isfinite(bbox_diag[:, None])
+    # Secondary bbox-diagonal metrics use all visible, in-bounds GT joints
+    # with a valid box, independent of availability of the primary torso anchors.
+    bbox_valid = valid_gt_bbox & pred_finite & np.isfinite(bbox_diag[:, None])
     bbox_norm_err = np.full(valid_gt.shape, np.nan, dtype=float)
     distance_px = np.linalg.norm(pred - gt_xy, axis=-1)
     bbox_scales = np.broadcast_to(bbox_diag[:, None], valid_gt.shape)
     bbox_norm_err[bbox_valid] = distance_px[bbox_valid] / bbox_scales[bbox_valid]
+    n_bbox_gt = int(valid_gt_bbox.sum())
+    bbox_prediction_coverage = float(bbox_valid.sum() / n_bbox_gt) if n_bbox_gt else float("nan")
+    bbox_pcks: dict[str, float] = {}
+    for threshold in (0.10, 0.20, 0.30):
+        correct_bbox = valid_gt_bbox & pred_finite & np.isfinite(bbox_norm_err) & (bbox_norm_err <= threshold)
+        bbox_pcks[f"pck_bbox_diag_{threshold:.2f}"] = float(correct_bbox.sum() / n_bbox_gt) if n_bbox_gt else float("nan")
 
     raw_finite = np.isfinite(raw).all(axis=-1)
     common = valid_gt & raw_finite & pred_finite
@@ -550,8 +560,53 @@ def score_method(
             pred_jitter_common.append(float(np.linalg.norm(pr_second) / scale))
             common_triples += 1
 
+    # Metrics specifically at intentionally omitted observation frames.
+    if gap_frames is None:
+        gap_frames = np.zeros(len(pred), dtype=bool)
+    gap_target = valid_gt & gap_frames[:, None]
+    n_gap_target = int(gap_target.sum())
+    gap_detected = gap_target & pred_finite & np.isfinite(err_torso)
+    gap_errors = err_torso[gap_detected]
+    gap_correct = gap_detected & (err_torso <= 0.20)
+    intentional_gap_coverage = float(gap_detected.sum() / n_gap_target) if n_gap_target else float("nan")
+    intentional_gap_pck20 = float(gap_correct.sum() / n_gap_target) if n_gap_target else float("nan")
+
+    # Ground-truth acceleration error and output jitter on triples centered
+    # exactly at an intentionally missing frame. Unlike common-raw triples,
+    # these statistics can score a repaired center frame.
+    gap_centered_accel_errors: list[float] = []
+    gap_centered_jitter: list[float] = []
+    for t in np.flatnonzero(gap_frames):
+        t = int(t)
+        if t < 1 or t >= len(pred) - 1:
+            continue
+        scale = torso_scale[t]
+        if not np.isfinite(scale) or scale <= 1e-9:
+            continue
+        gt3 = valid_gt[t - 1] & valid_gt[t] & valid_gt[t + 1]
+        pred3 = (
+            np.isfinite(pred[t - 1]).all(axis=-1)
+            & np.isfinite(pred[t]).all(axis=-1)
+            & np.isfinite(pred[t + 1]).all(axis=-1)
+        )
+        for j in np.flatnonzero(gt3 & pred3):
+            gt_second = gt_xy[t + 1, j] - 2 * gt_xy[t, j] + gt_xy[t - 1, j]
+            pred_second = pred[t + 1, j] - 2 * pred[t, j] + pred[t - 1, j]
+            gap_centered_accel_errors.append(float(np.linalg.norm(pred_second - gt_second) / scale))
+            gap_centered_jitter.append(float(np.linalg.norm(pred_second) / scale))
+
     return {
         "gt_points_scored": n_gt,
+        "bbox_gt_points_scored": n_bbox_gt,
+        "bbox_prediction_coverage": bbox_prediction_coverage,
+        **bbox_pcks,
+        "intentional_gap_target_points": n_gap_target,
+        "intentional_gap_prediction_coverage": intentional_gap_coverage,
+        "intentional_gap_mean_error_torso_norm_detected": float(np.mean(gap_errors)) if len(gap_errors) else float("nan"),
+        "intentional_gap_pck_torso_0.20": intentional_gap_pck20,
+        "gap_centered_temporal_triples": len(gap_centered_accel_errors),
+        "gap_centered_temporal_jitter_torso_norm": float(np.sqrt(np.mean(np.square(gap_centered_jitter)))) if gap_centered_jitter else float("nan"),
+        "gap_centered_gt_acceleration_error_torso_norm": float(np.mean(gap_centered_accel_errors)) if gap_centered_accel_errors else float("nan"),
         "prediction_coverage": coverage,
         "mean_error_px_detected": float(np.nanmean(err_px[detected_mask])) if detected_mask.any() else float("nan"),
         "mean_error_torso_norm_detected": float(np.nanmean(detected_torso)) if len(detected_torso) else float("nan"),
@@ -582,6 +637,7 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=Path("data/external/penn_action_qc_manifest.csv"))
     parser.add_argument("--out", type=Path, default=Path("outputs/penn_action_development"))
     parser.add_argument("--sequences", default="", help="Optional comma-separated training sequence IDs; otherwise sample action-stratified from QC-approved train split.")
+    parser.add_argument("--conditions", default=",".join(CONDITIONS), help="Comma-separated conditions to run; defaults to all conditions.")
     parser.add_argument("--max-per-action", type=int, default=2, help="Number of training sequences sampled per action (default: 2).")
     parser.add_argument("--seed", type=int, default=20261018)
     parser.add_argument("--confidence-threshold", type=float, default=0.35)
@@ -593,6 +649,12 @@ def main() -> int:
     parser.add_argument("--savgol-window", type=int, default=5)
     parser.add_argument("--savgol-polyorder", type=int, default=2)
     args = parser.parse_args()
+    requested_conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
+    if not requested_conditions or len(set(requested_conditions)) != len(requested_conditions):
+        parser.error("--conditions must contain distinct known condition names")
+    unknown_conditions = sorted(set(requested_conditions) - set(CONDITIONS))
+    if unknown_conditions:
+        parser.error(f"Unknown conditions: {unknown_conditions}. Choose from {CONDITIONS}")
 
     if args.max_per_action < 1:
         parser.error("--max-per-action must be >= 1")
@@ -642,13 +704,18 @@ def main() -> int:
         gt_xy, gt_vis, bbox = data["gt_xy"], data["gt_vis"], data["bbox_xyxy"]
         print(f"\n[{si}/{len(selected)}] Sequence {seq} ({data['action']}): {len(frames)} frames", flush=True)
 
-        for condition in CONDITIONS:
+        for condition in requested_conditions:
             raw, conf, sizes = extract_predictions(
                 frames, condition, mp.solutions.pose, args.gap_every, seq
             )
             masks = ground_truth_masks_and_scales(gt_xy, gt_vis, bbox, sizes)
             valid_gt = masks["valid_gt"]
+            valid_gt_bbox = masks["valid_gt_bbox"]
             torso_scale = masks["torso_scale"]
+            gap_frames = (
+                (np.arange(len(frames)) > 0)
+                & (np.arange(len(frames)) % args.gap_every == 0)
+            ) if condition == "missing_pose_observations" else np.zeros(len(frames), dtype=bool)
             bbox_diag = masks["bbox_diag"]
 
             estimates = {
@@ -674,8 +741,8 @@ def main() -> int:
             }
             for method, pred in estimates.items():
                 metrics = score_method(
-                    pred, raw, conf, gt_xy, valid_gt, torso_scale, bbox_diag,
-                    args.confidence_threshold,
+                    pred, raw, conf, gt_xy, valid_gt, valid_gt_bbox,
+                    torso_scale, bbox_diag, args.confidence_threshold, gap_frames,
                 )
                 all_rows.append({
                     "sequence": seq,
@@ -699,8 +766,9 @@ def main() -> int:
 
     metric_cols = [
         "prediction_coverage", "mean_error_px_detected", "mean_error_torso_norm_detected",
-        "mean_error_bbox_diag_norm_detected", "pck_torso_0.05", "pck_torso_0.10",
-        "pck_torso_0.20", "common_support_mean_error_torso_norm",
+        "mean_error_bbox_diag_norm_detected", "bbox_prediction_coverage",
+        "pck_bbox_diag_0.10", "pck_bbox_diag_0.20", "pck_bbox_diag_0.30",
+        "pck_torso_0.05", "pck_torso_0.10", "pck_torso_0.20", "common_support_mean_error_torso_norm",
         "common_support_pck_torso_0.20", "repair_target_coverage",
         "repair_target_mean_error_torso_norm", "repair_target_pck_torso_0.20",
         "false_correction_rate",
@@ -718,6 +786,9 @@ def main() -> int:
         "temporal_jitter_torso_norm",
         "gt_acceleration_error_torso_norm", "temporal_jitter_torso_norm_common_raw",
         "gt_acceleration_error_torso_norm_common_raw",
+        "intentional_gap_prediction_coverage", "intentional_gap_mean_error_torso_norm_detected",
+        "intentional_gap_pck_torso_0.20", "gap_centered_temporal_jitter_torso_norm",
+        "gap_centered_gt_acceleration_error_torso_norm",
     ]
     summary = result.groupby(["condition", "method"], as_index=False).agg(
         n_sequences=("sequence", "nunique"),
@@ -734,6 +805,9 @@ def main() -> int:
     deltas = []
     delta_metrics = [
         "prediction_coverage", "mean_error_torso_norm_detected", "pck_torso_0.20",
+        "bbox_prediction_coverage", "pck_bbox_diag_0.20",
+        "intentional_gap_prediction_coverage", "intentional_gap_pck_torso_0.20",
+        "gap_centered_temporal_jitter_torso_norm", "gap_centered_gt_acceleration_error_torso_norm",
         "common_support_mean_error_torso_norm", "common_support_pck_torso_0.20",
         "repair_target_pck_torso_0.20", "false_correction_rate",
         "missing_raw_method_coverage", "missing_raw_method_pck_torso_0.20",
@@ -835,7 +909,7 @@ def main() -> int:
         "selected_sequences": selected,
         "action_stratification_max_per_action": args.max_per_action if not args.sequences.strip() else None,
         "random_seed": args.seed,
-        "conditions": CONDITIONS,
+        "conditions": requested_conditions,
         "methods": METHODS,
         "penn_joint_indices_zero_based": PENN_JOINTS.tolist(),
         "mediapipe_joint_indices_zero_based": MEDIAPIPE_JOINTS.tolist(),
@@ -859,7 +933,8 @@ def main() -> int:
         "false_correction_rate_definition": "Among GT-valid raw predictions correct at torso-normalized PCK@0.20, fraction made incorrect or missing by the evaluated method.",
         "linear_missing_only_definition": "Fill only non-finite coordinate components using high-confidence, fully finite observations as interpolation anchors; preserve existing finite coordinate components exactly.",
         "primary_pck_definition": "For each frame, torso diameter is Euclidean distance between visible in-bounds Penn Action left shoulder and right hip (selected joint indices 0 and 7 after excluding head). Score visible in-bounds mapped ground-truth joints only in frames where this scale is valid. Prediction failures count as incorrect. Report PCK thresholds 0.05, 0.10, 0.20 of torso diameter.",
-        "secondary_error_normalization": "per-frame Penn Action bounding-box diagonal, interpreted as [x_min,y_min,x_max,y_max] after inspecting overlays",
+        "secondary_error_normalization": "Bounding-box-diagonal normalized metrics use every visible, in-bounds ground-truth joint with a valid annotation box, independent of primary torso-anchor availability; thresholds 0.10, 0.20, 0.30.",
+        "gap_centered_temporal_metrics": "Localization is scored on deliberately omitted observations; temporal jitter and ground-truth acceleration error use adjacent triples centered exactly at each deliberately omitted frame. Only primary-torso-valid joints/triples are included.",
         "sequence_level_summary": True,
         "frame_level_observations_not_treated_as_independent_for_summary": True,
         "limitations": [
@@ -887,6 +962,8 @@ def main() -> int:
         "initially_reliable_raw_false_correction_rate_mean",
         "temporal_jitter_torso_norm_common_raw_mean",
         "gt_acceleration_error_torso_norm_common_raw_mean",
+        "pck_bbox_diag_0.20_mean", "intentional_gap_pck_torso_0.20_mean",
+        "gap_centered_gt_acceleration_error_torso_norm_mean",
     ]
     print(summary[summary_columns].to_string(index=False))
     print("\n=== Paired deltas vs raw (mean across sequences; PCK/coverage positive is better; error/jitter/acceleration negative is better) ===")
