@@ -77,12 +77,19 @@ def main() -> int:
         mean_error=("selected_actual_error", "mean"),
     )
     selective_seq["candidate"] = "selective"
+    # per_point_choices.csv intentionally has no action column; recover the
+    # sequence-level action from candidate predictions, which do include it.
+    sequence_actions = pred[["sequence", "action"]].drop_duplicates()
+    if sequence_actions["sequence"].duplicated().any():
+        raise ValueError("A sequence maps to multiple action labels in candidate predictions.")
+    selective_seq = selective_seq.merge(
+        sequence_actions, on="sequence", how="left", validate="many_to_one"
+    )
+    if selective_seq["action"].isna().any():
+        raise ValueError("Could not recover action labels for one or more sequences.")
     all_seq = pd.concat([
         candidate_seq[["sequence", "action", "condition", "candidate", "n_points", "pck", "mean_error"]],
-        selective_seq.merge(
-            choices[["sequence", "condition", "action"]].drop_duplicates(),
-            on=["sequence", "condition"], how="left"
-        )[["sequence", "action", "condition", "candidate", "n_points", "pck", "mean_error"]],
+        selective_seq[["sequence", "action", "condition", "candidate", "n_points", "pck", "mean_error"]],
     ], ignore_index=True)
     all_seq.to_csv(out / "sequence_candidate_metrics.csv", index=False)
 
