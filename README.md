@@ -128,3 +128,20 @@ This is a coherent transferable project, not a guarantee that it matches every p
 ## Citation and reproducibility
 
 See [`SOURCES.md`](SOURCES.md) for research context and dataset notes. Cite MediaPipe and the papers relevant to any model and benchmark used in your final work. Respect licenses and privacy requirements for every video.
+
+
+## Selective repair (research development)
+
+A new experimental selector compares the existing candidate repairs per joint and frame. It uses only inference-time signals—reported confidence, missingness, local motion residuals, gap length, and candidate disagreement—to predict candidate localization error. It preserves the raw estimate unless the best repair's predicted torso-normalized error improves by at least a configured margin. The selector is deliberately allowed to abstain, including when the raw point is missing.
+
+The cross-fitted evaluator trains a separate selector for each condition and holds out an entire sequence at a time. Ground-truth coordinates are used to make training targets for other sequences and to score the held-out sequence; they are not used as selector features. It runs only on the official Penn Action training split and is **not** a test-set evaluation.
+
+Run from the repository root:
+
+```powershell
+python scripts/evaluate_selective_repair.py --max-per-action 2 --conditions clean,blur,low_resolution,occlusion,missing_pose_observations --min-predicted-gain 0.01 --out outputs/selective_repair_crossfit
+```
+
+Outputs include per-sequence metrics, per-point method choices, condition summaries, and protocol metadata. Use the same fixed sequence set when comparing margin values. Choose any margin using development-only cross-validation; do not choose it based on official test results. The selector currently uses two-sided temporal features and is therefore an offline method, not a causal real-time filter.
+
+**Important limitation:** the Penn Action left/right mapping remains provisional. An independent mapping check was inconsistent for frontal-view sequences, so mapping-sensitive conclusions should not be treated as settled until that issue is resolved. The selector is a research hypothesis to test, not yet an established improvement. Report its accuracy, coverage, false-correction rate, and repair fraction together; a positive result on this development subset alone does not establish generalization.

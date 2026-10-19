@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Cross-fitted, sequence-held-out evaluation of selective pose repair.
+
+All sequences must be from the official Penn Action training split. Each held-out
+sequence is evaluated by a selector fitted on other selected training sequences.
+The official test split is never read by this script.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from frametrust.selective import (  # noqa: E402
+    DEFAULT_CANDIDATES,
+    apply_candidate_choices,
+    build_selective_features,
+    candidate_error_targets,
+    fit_error_predictor,
+    predict_candidate_errors,
+    select_candidates,
+)
+from penn_action_development import (  # noqa: E402
+    CONDITIONS,
+    confidence_aware_repair,
+    extract_predictions,
+    ground_truth_masks_and_scales,
+    interpolate_missing,
+    interpolate_missing_only,
+    load_sequence,
+    one_euro_filter,
+    savgol_filter_pose,
+    select_development_sequences,
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset-root", type=Path, default=Path("data/external/Penn_Action"))
+    parser.add_argument("--manifest", type=Path, default=Path("data/external/penn_action_qc_manifest.csv"))
+    parser.add_argument("--sequences", default="", help="Optional comma-separated QC-approved official-train sequence IDs.")
+    parser.add_argument("--max-per-action", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=20261018)
+    parser.add_argument("--conditions", default=",".join(CONDITIONS))
+    parser.add_argument("--confidence-threshold", type=float, default=0.35)
+    parser.add_argument("--gap-every", type=int, default=5)
+    parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument("--one-euro-min-cutoff", type=float, default=1.0)
+    parser.add_argument("--one-euro-beta", type=float, default=0.007)
+    parser.add_argument("--one-euro-derivative-cutoff", type=float, default=1.0)
+    parser.add_argument("--savgol-window", type=int, default=5)
+    parser.add_argument("--savgol-polyorder", type=int, default=2)
+    parser.add_argument("--ridge", type=float, default=10.0)
+    parser.add_argument("--min-predicted-gain", type=float, default=0.01,
+                        help="Minimum torso-normalized predicted-error gain needed to change raw output.")
+    parser.add_argument("--out", type=Path, default=Path("outputs/selective_repair_crossfit"))
+    args = parser.parse_args()
+
+    if args.max_per_action < 1 or args.gap_every < 2 or args.fps <= 0:
+        parser.error("max-per-action must be >=1, gap-every >=2 and fps positive")
+    if args.savgol_window < 3 or args.savgol_window % 2 == 0:
+        parser.error("savgol-window must be odd and >=3")
+    if not 1 <= args.savgol_polyorder < args.savgol_window:
+        parser.error("savgol-polyorder must be >=1 and less than savgol-window")
+    if args.ridge < 0 or args.min_predicted_gain < 0:
+        parser.error("ridge and min-predicted-gain must be non-negative")
+
+    conditions = [x.strip() for x in args.conditions.split(",") if x.strip()]
+    unknown = set(conditions) - set(CONDITIONS)
+    if not conditions or unknown:
+        parser.error(f"unknown/empty conditions: {sorted(unknown)}")
+
+    root = args.dataset_root.resolve()
+    manifest_path = args.manifest.resolve()
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = pd.read_csv(manifest_path, dtype={"sequence": str})
+    if args.sequences.strip():
+        selected = [x.strip().zfill(4) for x in args.sequences.split(",") if x.strip()]
+        eligible = manifest.copy()
+        eligible["sequence"] = eligible["sequence"].astype(str).str.zfill(4)
+        eligible["include_bool"] = eligible["include_primary"].astype(str).str.lower().isin({"true", "1", "yes", "y"})
+        index = eligible.set_index("sequence")
+        for seq in selected:
+            if seq not in index.index or str(index.loc[seq, "split"]).lower() != "train" or not bool(index.loc[seq, "include_bool"]):
+                raise ValueError(f"{seq} is not QC-approved in official train split")
+    else:
+        selected = select_development_sequences(manifest, args.max_per_action, args.seed)
+    if len(set(selected)) < 3:
+        raise ValueError("Cross-fitted evaluation requires at least 3 distinct sequences.")
+    if len(set(selected)) != len(selected):
+        raise ValueError("Sequence IDs must be unique.")
+
+    try:
+        import mediapipe as mp
+    except ImportError as exc:
+        raise RuntimeError("MediaPipe is required in the active environment") from exc
+
+    start = time.time()
+    cache: dict[tuple[str, str], dict[str, Any]] = {}
+    names = list(DEFAULT_CANDIDATES)
+    for si, seq in enumerate(selected, 1):
+        data = load_sequence(root, seq)
+        frames = data["frames"]
+        gt_xy, gt_vis, bbox = data["gt_xy"], data["gt_vis"], data["bbox_xyxy"]
+        print(f"[{si}/{len(selected)}] {seq} ({data['action']}), {len(frames)} frames", flush=True)
+        for condition in conditions:
+            raw, conf, sizes = extract_predictions(
+                frames, condition, mp.solutions.pose, args.gap_every, seq
+            )
+            candidates = {
+                "raw": raw,
+                "linear_interpolation": interpolate_missing(raw, conf, args.confidence_threshold),
+                "linear_missing_only": interpolate_missing_only(raw, conf, args.confidence_threshold),
+                "confidence_aware": confidence_aware_repair(raw, conf, args.confidence_threshold),
+                "one_euro": one_euro_filter(
+                    raw, conf, sizes, args.confidence_threshold, args.fps,
+                    args.one_euro_min_cutoff, args.one_euro_beta,
+                    args.one_euro_derivative_cutoff,
+                ),
+                "savgol": savgol_filter_pose(
+                    raw, conf, sizes, args.confidence_threshold,
+                    args.savgol_window, args.savgol_polyorder,
+                ),
+            }
+            masks = ground_truth_masks_and_scales(gt_xy, gt_vis, bbox, sizes)
+            features = build_selective_features(
+                raw, conf, sizes, candidates, args.confidence_threshold
+            )
+            errors, scoreable = candidate_error_targets(
+                candidates, gt_xy, masks["valid_gt"], masks["torso_scale"], names
+            )
+            cache[(seq, condition)] = {
+                "action": data["action"], "raw": raw, "candidates": candidates,
+                "features": features, "errors": errors, "scoreable": scoreable,
+                "valid_gt": masks["valid_gt"], "torso_scale": masks["torso_scale"],
+                "gt_xy": gt_xy,
+            }
+
+    result_rows: list[dict[str, Any]] = []
+    choices_rows: list[dict[str, Any]] = []
+    for condition in conditions:
+        for heldout in selected:
+            train_x: list[np.ndarray] = []
+            train_y: list[np.ndarray] = []
+            for seq in selected:
+                if seq == heldout:
+                    continue
+                item = cache[(seq, condition)]
+                mask = item["scoreable"]
+                if mask.any():
+                    train_x.append(item["features"][mask])
+                    train_y.append(item["errors"][mask])
+            if not train_x or sum(len(x) for x in train_x) < 100:
+                raise RuntimeError(f"Insufficient training points to fit selector for {heldout}/{condition}")
+            x_train = np.concatenate(train_x, axis=0)
+            y_train = np.concatenate(train_y, axis=0)
+            model = fit_error_predictor(x_train, y_train, ridge=args.ridge)
+
+            item = cache[(heldout, condition)]
+            predicted = predict_candidate_errors(model, item["features"])
+            choices = select_candidates(predicted, args.min_predicted_gain)
+            selected_pose = apply_candidate_choices(item["candidates"], choices, names)
+            actual_errors, scoreable = candidate_error_targets(
+                {"selective": selected_pose}, item["gt_xy"], item["valid_gt"],
+                item["torso_scale"], ["selective"]
+            )
+            raw_error = item["errors"][..., 0]
+            sel_error = actual_errors[..., 0]
+            target = scoreable
+            n_target = int(target.sum())
+            raw_finite = np.isfinite(item["raw"]).all(axis=-1)
+            sel_finite = np.isfinite(selected_pose).all(axis=-1)
+            raw_coverage = float((target & raw_finite).sum() / n_target) if n_target else float("nan")
+            coverage = float((target & sel_finite).sum() / n_target) if n_target else float("nan")
+            raw_pck = float(((raw_error <= 0.20) & target).sum() / n_target) if n_target else float("nan")
+            pck = float(((sel_error <= 0.20) & target).sum() / n_target) if n_target else float("nan")
+            harmed = target & raw_finite & (raw_error <= 0.20) & (~sel_finite | (sel_error > 0.20))
+            raw_correct_n = int((target & raw_finite & (raw_error <= 0.20)).sum())
+            false_correction = float(harmed.sum() / raw_correct_n) if raw_correct_n else float("nan")
+            frequencies = {f"selected_{name}_fraction": float((choices == i).mean()) for i, name in enumerate(names)}
+            result_rows.append({
+                "sequence": heldout, "action": item["action"], "condition": condition,
+                "n_training_sequences": len(selected) - 1, "n_scored_points": n_target,
+                "raw_coverage": raw_coverage, "selective_coverage": coverage,
+                "raw_pck_torso_0.20": raw_pck, "selective_pck_torso_0.20": pck,
+                "delta_pck_vs_raw": pck - raw_pck,
+                "raw_mean_error_norm": float(np.mean(raw_error[target])) if n_target else float("nan"),
+                "selective_mean_error_norm": float(np.mean(sel_error[target])) if n_target else float("nan"),
+                "false_correction_rate": false_correction,
+                "repair_fraction": float((choices != 0).mean()),
+                "ridge": args.ridge, "min_predicted_gain": args.min_predicted_gain,
+                **frequencies,
+            })
+            for t in range(choices.shape[0]):
+                for j in range(choices.shape[1]):
+                    choices_rows.append({
+                        "sequence": heldout, "condition": condition, "frame": t,
+                        "joint": j, "choice": names[int(choices[t, j])],
+                        "raw_finite": bool(raw_finite[t, j]),
+                        "selected_finite": bool(sel_finite[t, j]),
+                        "scoreable_gt": bool(target[t, j]),
+                    })
+            print(
+                f"  {condition}: {heldout} PCK raw={raw_pck:.3f}, "
+                f"selective={pck:.3f}, repair={float((choices != 0).mean()):.1%}",
+                flush=True,
+            )
+
+    detail = pd.DataFrame(result_rows)
+    detail.to_csv(out / "sequence_condition_metrics.csv", index=False)
+    pd.DataFrame(choices_rows).to_csv(out / "per_point_choices.csv", index=False)
+    summary = detail.groupby("condition", as_index=False).agg(
+        n_sequences=("sequence", "nunique"),
+        raw_pck_torso_0_20_mean=("raw_pck_torso_0.20", "mean"),
+        selective_pck_torso_0_20_mean=("selective_pck_torso_0.20", "mean"),
+        delta_pck_vs_raw_mean=("delta_pck_vs_raw", "mean"),
+        raw_coverage_mean=("raw_coverage", "mean"),
+        selective_coverage_mean=("selective_coverage", "mean"),
+        false_correction_rate_mean=("false_correction_rate", "mean"),
+        repair_fraction_mean=("repair_fraction", "mean"),
+        selective_mean_error_norm_mean=("selective_mean_error_norm", "mean"),
+    )
+    summary.to_csv(out / "condition_summary.csv", index=False)
+    metadata = {
+        "protocol": "leave-one-sequence-out cross-fitting, independently per condition",
+        "dataset": "Penn Action",
+        "official_split": "training only; each sequence is validated as train by load_sequence",
+        "selected_sequences": selected,
+        "conditions": conditions,
+        "candidate_order": names,
+        "features_use_ground_truth": False,
+        "ground_truth_used_only_for_training_labels_and_evaluation": True,
+        "ridge": args.ridge,
+        "min_predicted_gain_torso_normalized": args.min_predicted_gain,
+        "target_loss": "candidate localization error normalized by left-shoulder/right-hip torso scale, clipped to [0,1]; missing prediction loss=1",
+        "limitations": [
+            "Development-only cross-fit on the selected official-training subset; not official test performance.",
+            "Global left/right landmark mapping remains provisional because independent frontal-view validation was inconsistent.",
+            "Selector is a linear error predictor, not a calibrated probability of repair success.",
+            "Features use both neighboring frames and are therefore offline/non-causal.",
+            "Torso-scale-scored points only; bbox-normalized metrics are not included in this selector script.",
+            "The per-sequence output is exploratory and should not be treated as a confirmatory statistical test.",
+        ],
+        "runtime_seconds": round(time.time() - start, 2),
+    }
+    (out / "run_metadata.json").write_text(__import__("json").dumps(metadata, indent=2), encoding="utf-8")
+    print("\n=== Cross-fitted summary: sequence means ===")
+    print(summary.round(4).to_string(index=False))
+    print(f"\nSaved outputs to {out}")
+    print("Development-only. Do not describe as official test-set performance.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
