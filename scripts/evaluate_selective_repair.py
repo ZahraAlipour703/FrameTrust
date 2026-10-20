@@ -8,6 +8,8 @@ The official test split is never read by this script.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 import time
 from pathlib import Path
@@ -32,6 +34,8 @@ from frametrust.selective import (  # noqa: E402
 )
 from penn_action_development import (  # noqa: E402
     CONDITIONS,
+    MEDIAPIPE_JOINTS,
+    PENN_JOINTS,
     confidence_aware_repair,
     extract_predictions,
     ground_truth_masks_and_scales,
@@ -42,6 +46,59 @@ from penn_action_development import (  # noqa: E402
     savgol_filter_pose,
     select_development_sequences,
 )
+
+
+def _save_feature_cache(
+    path: Path,
+    item: dict[str, Any],
+    names: list[str],
+    signature: str,
+) -> None:
+    """Persist inference-time features, targets, and candidate arrays for later re-analysis."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "action": np.asarray(str(item["action"])),
+        "cache_signature": np.asarray(signature),
+        "features": item["features"],
+        "errors": item["errors"],
+        "scoreable": item["scoreable"],
+        "valid_gt": item["valid_gt"],
+        "torso_scale": item["torso_scale"],
+        "gt_xy": item["gt_xy"],
+        "raw": item["raw"],
+    }
+    for name in names:
+        payload[f"candidate__{name}"] = item["candidates"][name]
+    np.savez_compressed(path, **payload)
+
+
+def _load_feature_cache(
+    path: Path,
+    names: list[str],
+    expected_signature: str,
+) -> dict[str, Any]:
+    """Load one cached sequence-condition item and reject incompatible settings."""
+    with np.load(path, allow_pickle=False) as saved:
+        observed_signature = str(saved["cache_signature"].item())
+        if observed_signature != expected_signature:
+            raise ValueError(
+                f"Feature cache settings do not match this run: {path}. "
+                "Remove the feature_cache folder or rerun without --reuse-feature-cache."
+            )
+        candidates = {
+            name: saved[f"candidate__{name}"].copy() for name in names
+        }
+        return {
+            "action": str(saved["action"].item()),
+            "features": saved["features"].copy(),
+            "errors": saved["errors"].copy(),
+            "scoreable": saved["scoreable"].copy(),
+            "valid_gt": saved["valid_gt"].copy(),
+            "torso_scale": saved["torso_scale"].copy(),
+            "gt_xy": saved["gt_xy"].copy(),
+            "raw": saved["raw"].copy(),
+            "candidates": candidates,
+        }
 
 
 def _fit_selector_for_sequences(
@@ -294,6 +351,8 @@ def main() -> int:
                         help="Minimum mean inner-fold prediction coverage for threshold selection.")
     parser.add_argument("--nested-max-false-correction", type=float, default=0.01,
                         help="Maximum mean inner-fold false-correction rate for threshold selection.")
+    parser.add_argument("--reuse-feature-cache", action="store_true",
+                        help="Reuse compatible per-sequence feature caches in the output folder; fails on a configuration mismatch.")
     parser.add_argument("--out", type=Path, default=Path("outputs/selective_repair_crossfit"))
     args = parser.parse_args()
 
@@ -348,12 +407,55 @@ def main() -> int:
     start = time.time()
     cache: dict[tuple[str, str], dict[str, Any]] = {}
     names = list(DEFAULT_CANDIDATES)
+    cache_dir = out / "feature_cache"
+    cache_configuration = {
+        "format_version": 1,
+        "dataset_root": str(root),
+        "selected_sequences": selected,
+        "conditions": conditions,
+        "candidate_order": names,
+        "penn_joint_indices_zero_based": PENN_JOINTS.tolist(),
+        "mediapipe_joint_indices_zero_based": MEDIAPIPE_JOINTS.tolist(),
+        "confidence_threshold": args.confidence_threshold,
+        "gap_every": args.gap_every,
+        "fps": args.fps,
+        "one_euro_min_cutoff": args.one_euro_min_cutoff,
+        "one_euro_beta": args.one_euro_beta,
+        "one_euro_derivative_cutoff": args.one_euro_derivative_cutoff,
+        "savgol_window": args.savgol_window,
+        "savgol_polyorder": args.savgol_polyorder,
+    }
+    cache_signature = hashlib.sha256(
+        json.dumps(cache_configuration, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     for si, seq in enumerate(selected, 1):
+        cache_paths = {
+            condition: cache_dir / f"{seq}_{condition}.npz" for condition in conditions
+        }
+        if args.reuse_feature_cache and all(p.is_file() for p in cache_paths.values()):
+            for condition, cache_path in cache_paths.items():
+                cache[(seq, condition)] = _load_feature_cache(
+                    cache_path, names, cache_signature
+                )
+            print(
+                f"[{si}/{len(selected)}] {seq}: loaded compatible feature cache "
+                f"for {len(conditions)} conditions",
+                flush=True,
+            )
+            continue
+
         data = load_sequence(root, seq)
         frames = data["frames"]
         gt_xy, gt_vis, bbox = data["gt_xy"], data["gt_vis"], data["bbox_xyxy"]
         print(f"[{si}/{len(selected)}] {seq} ({data['action']}), {len(frames)} frames", flush=True)
         for condition in conditions:
+            cache_path = cache_paths[condition]
+            if args.reuse_feature_cache and cache_path.is_file():
+                cache[(seq, condition)] = _load_feature_cache(
+                    cache_path, names, cache_signature
+                )
+                print(f"  {condition}: loaded cached features", flush=True)
+                continue
             raw, conf, sizes = extract_predictions(
                 frames, condition, mp.solutions.pose, args.gap_every, seq
             )
@@ -379,12 +481,14 @@ def main() -> int:
             errors, scoreable = candidate_error_targets(
                 candidates, gt_xy, masks["valid_gt"], masks["torso_scale"], names
             )
-            cache[(seq, condition)] = {
+            cache_item = {
                 "action": data["action"], "raw": raw, "candidates": candidates,
                 "features": features, "errors": errors, "scoreable": scoreable,
                 "valid_gt": masks["valid_gt"], "torso_scale": masks["torso_scale"],
                 "gt_xy": gt_xy,
             }
+            cache[(seq, condition)] = cache_item
+            _save_feature_cache(cache_path, cache_item, names, cache_signature)
 
     result_rows: list[dict[str, Any]] = []
     choices_rows: list[dict[str, Any]] = []
@@ -663,6 +767,13 @@ def main() -> int:
         "selected_sequences": selected,
         "conditions": conditions,
         "candidate_order": names,
+        "feature_cache": {
+            "directory": str(cache_dir),
+            "format_version": 1,
+            "signature": cache_signature,
+            "reuse_enabled_this_run": args.reuse_feature_cache,
+            "cached_per_sequence_condition": True,
+        },
         "features_use_ground_truth": False,
         "ground_truth_used_only_for_training_labels_and_evaluation": True,
         "ridge": args.ridge,
@@ -689,7 +800,7 @@ def main() -> int:
         ],
         "runtime_seconds": round(time.time() - start, 2),
     }
-    (out / "run_metadata.json").write_text(__import__("json").dumps(metadata, indent=2), encoding="utf-8")
+    (out / "run_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print("\n=== Cross-fitted summary: sequence means ===")
     print(summary.round(4).to_string(index=False))
     print("\n=== Nested threshold-selected method: sequence means ===")
