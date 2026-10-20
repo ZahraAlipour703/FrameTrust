@@ -44,6 +44,225 @@ from penn_action_development import (  # noqa: E402
 )
 
 
+def _fit_selector_for_sequences(
+    cache: dict[tuple[str, str], dict[str, Any]],
+    condition: str,
+    training_sequences: list[str],
+    ridge: float,
+    heldout_label: str,
+) -> dict[str, np.ndarray | float | int]:
+    """Fit on the supplied sequence IDs only; labels never cross the split."""
+    train_x: list[np.ndarray] = []
+    train_y: list[np.ndarray] = []
+    for seq in training_sequences:
+        item = cache[(seq, condition)]
+        mask = item["scoreable"]
+        if mask.any():
+            train_x.append(item["features"][mask])
+            train_y.append(item["errors"][mask])
+    n_rows = sum(len(x) for x in train_x)
+    if not train_x or n_rows < 100:
+        raise RuntimeError(
+            f"Insufficient scoreable training points ({n_rows}) for {heldout_label}"
+        )
+    return fit_error_predictor(
+        np.concatenate(train_x, axis=0),
+        np.concatenate(train_y, axis=0),
+        ridge=ridge,
+    )
+
+
+def _score_margin(
+    item: dict[str, Any],
+    predicted: np.ndarray,
+    margin: float,
+    names: list[str],
+) -> dict[str, float | int]:
+    """Score one sequence at a given margin using sequence-level metrics."""
+    target = item["scoreable"]
+    n_target = int(target.sum())
+    choices = select_candidates(predicted, margin)
+    pose = apply_candidate_choices(item["candidates"], choices, names)
+    selected_error = np.take_along_axis(
+        item["errors"], choices[..., None], axis=-1
+    )[..., 0]
+    finite = np.isfinite(pose).all(axis=-1)
+    raw_finite = np.isfinite(item["raw"]).all(axis=-1)
+    raw_error = item["errors"][..., 0]
+    raw_correct = target & raw_finite & (raw_error <= 0.20)
+    harmed = raw_correct & (~finite | (selected_error > 0.20))
+    return {
+        "n_scored_points": n_target,
+        "pck": float(((selected_error <= 0.20) & target).sum() / n_target)
+        if n_target else float("nan"),
+        "coverage": float((finite & target).sum() / n_target)
+        if n_target else float("nan"),
+        "false_correction_rate": float(harmed.sum() / raw_correct.sum())
+        if raw_correct.any() else float("nan"),
+        "repair_fraction": float((choices[target] != 0).mean())
+        if n_target else float("nan"),
+        "mean_error_norm": float(np.mean(selected_error[target]))
+        if n_target else float("nan"),
+    }
+
+
+def nested_threshold_selection(
+    cache: dict[tuple[str, str], dict[str, Any]],
+    selected: list[str],
+    conditions: list[str],
+    names: list[str],
+    thresholds: list[float],
+    ridge: float,
+    seed: int,
+    n_inner_folds: int,
+    pck_tolerance: float,
+    min_coverage: float,
+    max_false_correction: float,
+) -> tuple[dict[tuple[str, str], float], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select a conservative margin inside each outer training fold.
+
+    Every outer sequence is excluded from both the inner-fold training data and
+    the inner threshold-selection metrics. Inner splits are action-balanced by
+    distributing sequences from each action across folds.
+    """
+    selected_margins: dict[tuple[str, str], float] = {}
+    selection_rows: list[dict[str, Any]] = []
+    sweep_rows: list[dict[str, Any]] = []
+    margin_values = sorted(set(float(x) for x in thresholds))
+
+    for condition_idx, condition in enumerate(conditions):
+        for outer_idx, outer_sequence in enumerate(selected):
+            outer_training = [seq for seq in selected if seq != outer_sequence]
+            fold_count = min(n_inner_folds, len(outer_training))
+            folds: list[list[str]] = [[] for _ in range(fold_count)]
+            rng = np.random.default_rng(seed + 1009 * outer_idx + 9176 * condition_idx)
+
+            action_groups: dict[str, list[str]] = {}
+            for seq in outer_training:
+                action = str(cache[(seq, condition)]["action"])
+                action_groups.setdefault(action, []).append(seq)
+            for action_idx, action in enumerate(sorted(action_groups)):
+                seqs = list(action_groups[action])
+                rng.shuffle(seqs)
+                start_fold = action_idx % fold_count
+                for i, seq in enumerate(seqs):
+                    folds[(start_fold + i) % fold_count].append(seq)
+
+            inner_rows: list[dict[str, Any]] = []
+            for fold_idx, validation_sequences in enumerate(folds):
+                if not validation_sequences:
+                    continue
+                validation_set = set(validation_sequences)
+                training_sequences = [
+                    seq for seq in outer_training if seq not in validation_set
+                ]
+                model = _fit_selector_for_sequences(
+                    cache, condition, training_sequences, ridge,
+                    f"nested inner fold {fold_idx + 1}/{fold_count}, outer={outer_sequence}, condition={condition}",
+                )
+                for validation_sequence in validation_sequences:
+                    item = cache[(validation_sequence, condition)]
+                    predicted = predict_candidate_errors(model, item["features"])
+                    for margin in margin_values:
+                        metrics = _score_margin(item, predicted, margin, names)
+                        row = {
+                            "outer_heldout_sequence": outer_sequence,
+                            "condition": condition,
+                            "inner_validation_sequence": validation_sequence,
+                            "inner_validation_action": item["action"],
+                            "inner_fold": fold_idx,
+                            "min_predicted_gain": margin,
+                            **metrics,
+                        }
+                        inner_rows.append(row)
+                        sweep_rows.append(row)
+
+            inner = pd.DataFrame(inner_rows)
+            if inner.empty:
+                raise RuntimeError(
+                    f"No inner validation scores for outer={outer_sequence}, condition={condition}"
+                )
+            summary = inner.groupby("min_predicted_gain", as_index=False).agg(
+                n_inner_sequences=("inner_validation_sequence", "nunique"),
+                pck_mean=("pck", "mean"),
+                coverage_mean=("coverage", "mean"),
+                false_correction_rate_mean=("false_correction_rate", "mean"),
+                repair_fraction_mean=("repair_fraction", "mean"),
+                mean_error_norm=("mean_error_norm", "mean"),
+            )
+
+            feasible = summary[
+                summary["pck_mean"].notna()
+                & (summary["coverage_mean"] >= min_coverage)
+                & (summary["false_correction_rate_mean"] <= max_false_correction)
+            ].copy()
+            fallback = "none"
+            if feasible.empty:
+                fallback = "false_correction_guardrail_relaxed"
+                feasible = summary[
+                    summary["pck_mean"].notna()
+                    & (summary["coverage_mean"] >= min_coverage)
+                ].copy()
+            if feasible.empty:
+                fallback = "coverage_guardrail_relaxed"
+                feasible = summary[summary["pck_mean"].notna()].copy()
+            if feasible.empty:
+                raise RuntimeError(
+                    f"No PCK-scoreable thresholds for outer={outer_sequence}, condition={condition}"
+                )
+
+            best_inner_pck = float(feasible["pck_mean"].max())
+            near_best = feasible[
+                feasible["pck_mean"] >= best_inner_pck - pck_tolerance
+            ].sort_values("min_predicted_gain")
+            chosen = near_best.iloc[-1]
+            margin = float(chosen["min_predicted_gain"])
+            selected_margins[(condition, outer_sequence)] = margin
+            selection_rows.append({
+                "outer_heldout_sequence": outer_sequence,
+                "condition": condition,
+                "selected_margin": margin,
+                "best_feasible_inner_pck": best_inner_pck,
+                "selected_inner_pck": float(chosen["pck_mean"]),
+                "selected_inner_pck_gap_from_best": best_inner_pck - float(chosen["pck_mean"]),
+                "selected_inner_coverage": float(chosen["coverage_mean"]),
+                "selected_inner_false_correction_rate": float(chosen["false_correction_rate_mean"]),
+                "selected_inner_repair_fraction": float(chosen["repair_fraction_mean"]),
+                "selected_inner_mean_error_norm": float(chosen["mean_error_norm"]),
+                "n_inner_validation_sequences": int(chosen["n_inner_sequences"]),
+                "pck_tolerance": pck_tolerance,
+                "minimum_coverage": min_coverage,
+                "maximum_false_correction_rate": max_false_correction,
+                "guardrail_fallback": fallback,
+                "inner_folds": fold_count,
+            })
+            print(
+                f"  nested threshold: {condition}, outer={outer_sequence}, "
+                f"margin={margin:g}, inner PCK={float(chosen['pck_mean']):.3f}, "
+                f"fallback={fallback}",
+                flush=True,
+            )
+
+    return selected_margins, selection_rows, sweep_rows
+
+
+def _bootstrap_mean_ci(
+    values: np.ndarray,
+    rng: np.random.Generator,
+    n_bootstrap: int = 5000,
+) -> tuple[float, float]:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return float("nan"), float("nan")
+    if len(values) == 1:
+        return float(values[0]), float(values[0])
+    draws = rng.integers(0, len(values), size=(n_bootstrap, len(values)))
+    means = values[draws].mean(axis=1)
+    low, high = np.quantile(means, [0.025, 0.975])
+    return float(low), float(high)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", type=Path, default=Path("data/external/Penn_Action"))
