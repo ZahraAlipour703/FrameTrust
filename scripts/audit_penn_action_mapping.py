@@ -98,6 +98,22 @@ def choose_sequences(
     return chosen
 
 
+def choose_winner(direct: float, swapped: float, higher_is_better: bool) -> str:
+    direct_ok = np.isfinite(direct)
+    swapped_ok = np.isfinite(swapped)
+    if direct_ok and not swapped_ok:
+        return "direct"
+    if swapped_ok and not direct_ok:
+        return "swapped"
+    if not direct_ok and not swapped_ok:
+        return "tie"
+    if np.isclose(direct, swapped):
+        return "tie"
+    if higher_is_better:
+        return "swapped" if swapped > direct else "direct"
+    return "swapped" if swapped < direct else "direct"
+
+
 def score_mapping(
     pred: np.ndarray,
     gt: np.ndarray,
@@ -211,8 +227,8 @@ def main() -> int:
             "direct_mean_error_norm": direct[1],
             "swapped_mean_error_norm": swapped[1],
             "delta_swapped_minus_direct_error": swapped[1] - direct[1],
-            "pck_winner": "tie" if np.isclose(direct[0], swapped[0], equal_nan=True) else ("swapped" if swapped[0] > direct[0] else "direct"),
-            "mean_error_winner": "tie" if np.isclose(direct[1], swapped[1], equal_nan=True) else ("swapped" if swapped[1] < direct[1] else "direct"),
+            "pck_winner": choose_winner(direct[0], swapped[0], higher_is_better=True),
+            "mean_error_winner": choose_winner(direct[1], swapped[1], higher_is_better=False),
         })
         for j, name in enumerate(JOINT_NAMES):
             joint_rows.append({
