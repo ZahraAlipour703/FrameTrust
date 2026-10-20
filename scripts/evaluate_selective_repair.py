@@ -184,6 +184,8 @@ def nested_threshold_selection(
                 )
             summary = inner.groupby("min_predicted_gain", as_index=False).agg(
                 n_inner_sequences=("inner_validation_sequence", "nunique"),
+                n_scoreable_inner_sequences=("pck", "count"),
+                n_inner_sequences_with_false_correction_metric=("false_correction_rate", "count"),
                 pck_mean=("pck", "mean"),
                 coverage_mean=("coverage", "mean"),
                 false_correction_rate_mean=("false_correction_rate", "mean"),
@@ -230,6 +232,8 @@ def nested_threshold_selection(
                 "selected_inner_repair_fraction": float(chosen["repair_fraction_mean"]),
                 "selected_inner_mean_error_norm": float(chosen["mean_error_norm"]),
                 "n_inner_validation_sequences": int(chosen["n_inner_sequences"]),
+                "n_scoreable_inner_sequences": int(chosen["n_scoreable_inner_sequences"]),
+                "n_inner_sequences_with_false_correction_metric": int(chosen["n_inner_sequences_with_false_correction_metric"]),
                 "pck_tolerance": pck_tolerance,
                 "minimum_coverage": min_coverage,
                 "maximum_false_correction_rate": max_false_correction,
@@ -604,6 +608,7 @@ def main() -> int:
     nested_detail.to_csv(out / "nested_selective_sequence_metrics.csv", index=False)
     nested_summary = nested_detail.groupby(["condition", "method"], as_index=False).agg(
         n_sequences=("sequence", "nunique"),
+        n_scoreable_sequences=("pck_torso_0.20", "count"),
         pck_mean=("pck_torso_0.20", "mean"),
         mean_error_norm_clipped=("mean_error_norm_clipped", "mean"),
         coverage_mean=("coverage", "mean"),
