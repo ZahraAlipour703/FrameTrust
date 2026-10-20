@@ -52,11 +52,11 @@ def test_candidate_targets_penalize_missing_and_mask_invalid_ground_truth():
 
 def test_selector_abstains_unless_predicted_gain_clears_margin():
     predicted = np.array([
-        [[0.10, 0.095, 0.08]],
+        [[0.10, 0.095, 0.081]],
         [[0.10, 0.07, 0.09]],
     ])
     choices = select_candidates(predicted, min_predicted_gain=0.02)
-    assert choices.tolist() == [[0, 1]]
+    assert choices.tolist() == [[0], [1]]
 
 
 def test_fit_and_predict_error_model_shapes():
