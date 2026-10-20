@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,3 +76,22 @@ def test_nested_threshold_selection_excludes_outer_heldout_and_returns_one_margi
         assert row["outer_heldout_sequence"] != row["inner_validation_sequence"]
     for row in selected_rows:
         assert row["selected_inner_pck_gap_from_best"] <= 0.005 + 1e-9
+
+
+
+def test_feature_cache_round_trip_and_signature_guard(tmp_path):
+    cache, selected, names = _toy_cache()
+    source = cache[(selected[0], "clean")]
+    path = tmp_path / "feature_cache" / "toy.npz"
+    module._save_feature_cache(path, source, names, signature="test-signature")
+
+    loaded = module._load_feature_cache(path, names, expected_signature="test-signature")
+    assert loaded["action"] == source["action"]
+    assert np.array_equal(loaded["scoreable"], source["scoreable"])
+    assert np.allclose(loaded["features"], source["features"])
+    assert np.allclose(loaded["errors"], source["errors"])
+    for name in names:
+        assert np.allclose(loaded["candidates"][name], source["candidates"][name])
+
+    with pytest.raises(ValueError, match="settings do not match"):
+        module._load_feature_cache(path, names, expected_signature="wrong-signature")
