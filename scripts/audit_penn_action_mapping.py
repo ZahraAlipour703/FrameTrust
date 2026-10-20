@@ -157,6 +157,10 @@ def annotate_panel(
         if np.isfinite(pred[j]).all():
             px, py = np.rint(pred[j]).astype(int)
             cv2.circle(canvas, (px, py), 5, (0, 0, 255), 2, cv2.LINE_AA)
+            # Label prediction identities: otherwise direct/swapped panels render
+            # the same unlabelled point set and are visually non-diagnostic.
+            cv2.putText(canvas, f"P{j}", (px + 5, py + 12), cv2.FONT_HERSHEY_PLAIN,
+                        0.9, (0, 0, 255), 1, cv2.LINE_AA)
     cv2.putText(canvas, "GT: green cross + index | prediction: red circle", (8, canvas.shape[0] - 9),
                 cv2.FONT_HERSHEY_PLAIN, 1.0, (255, 255, 255), 1, cv2.LINE_AA)
     return canvas
