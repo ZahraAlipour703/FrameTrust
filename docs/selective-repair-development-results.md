@@ -68,3 +68,24 @@ A narrower research question remains plausible: can an error-aware selector redu
 5. only then lock the protocol and evaluate the official test split once.
 
 No values in this note should be described as official test-set performance or as evidence of state-of-the-art results.
+
+## Follow-up mapping audit on a separate sequence subset (2026-10-20)
+
+A clean-frame audit compared the direct anatomical left/right MediaPipe correspondence with the pairwise-swapped correspondence on 15 QC-approved Penn Action official-training sequences sampled after excluding sequence IDs listed in the earlier selective-repair run metadata. Ten sequences had valid primary torso scales; five were unscoreable under the current left-shoulder/right-hip scale rule. This is a sequence-held-out mapping check on the same dataset, not a test-split evaluation.
+
+Across the 10 scoreable sequences:
+
+- Sequence-macro PCK@0.20: direct mapping 0.1105, swapped mapping 0.7022; paired mean difference (swapped minus direct) +0.5917. A simple sequence bootstrap (10 sequence units, 100,000 resamples) gave a descriptive 95% percentile interval of approximately [+0.4336, +0.7116].
+- Sequence-macro clipped normalized error: direct 0.5609, swapped 0.2265; paired mean difference (swapped minus direct) -0.3345. The corresponding descriptive sequence-bootstrap 95% interval was approximately [-0.4276, -0.2391].
+- The swapped mapping had higher PCK in 9/10 scoreable sequences and lower mean normalized error in all 10. The sole sequence with higher direct PCK was bench_press (sequence 0355); swapped still had lower mean error on that sequence.
+- As a supplementary point-weighted calculation over 3,918 scoreable frame/joint points, PCK was 0.1258 direct versus 0.7675 swapped. Do not use point-level counts as independent inferential samples because points are clustered within sequences and frames.
+
+The previous selector's current repository mapping is already the swapped mapping. **Retain it as the provisional primary mapping for the next development experiment** rather than changing it back. The result is strong enough to support this operational choice in this dataset, but it does not establish a universal mapping across every viewpoint/action: only ten sequences were scoreable under the primary normalization, five sequences could not be scored, and earlier frontal-view audits had inconsistent cases.
+
+### Visual audit limitation and correction
+
+The first contact sheet labelled prediction points only as red circles without identifying which predicted landmark occupied each Penn Action joint slot. Since a pairwise swap preserves the unordered set of point locations, those panels could look nearly identical and were not sufficient to judge correspondence visually. The audit script has now been updated to label predictions (`P0`–`P11`) so the association can be inspected. Rerun the mapping audit to regenerate the per-sequence overlays/contact sheet; the already computed CSV results do not depend on this visualization change.
+
+### Consequence for the next experiment
+
+Do not spend more time comparing the current swapped mapping with the direct mapping on the already-used sequences. Keep the swapped mapping fixed for development, preserve the five unscoreable sequences as an explicitly reported data-quality limitation, and proceed with a locked, nested sequence-level validation protocol for the repair method. Before any final claim, ensure the same mapping/scoring policy is applied consistently to every candidate and reserve the official test split for a single final evaluation.
