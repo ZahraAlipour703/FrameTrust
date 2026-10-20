@@ -410,6 +410,7 @@ def main() -> int:
     cache_dir = out / "feature_cache"
     cache_configuration = {
         "format_version": 1,
+        "mediapipe_version": getattr(mp, "__version__", "unknown"),
         "dataset_root": str(root),
         "selected_sequences": selected,
         "conditions": conditions,
