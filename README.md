@@ -145,3 +145,15 @@ python scripts/evaluate_selective_repair.py --max-per-action 2 --conditions clea
 Outputs include per-sequence metrics, per-point method choices, condition summaries, and protocol metadata. Use the same fixed sequence set when comparing margin values. Choose any margin using development-only cross-validation; do not choose it based on official test results. The selector currently uses two-sided temporal features and is therefore an offline method, not a causal real-time filter.
 
 **Important limitation:** the Penn Action left/right mapping remains provisional. An independent mapping check was inconsistent for frontal-view sequences, so mapping-sensitive conclusions should not be treated as settled until that issue is resolved. The selector is a research hypothesis to test, not yet an established improvement. Report its accuracy, coverage, false-correction rate, and repair fraction together; a positive result on this development subset alone does not establish generalization.
+
+## Independent landmark-mapping audit
+
+Before further selector tuning, compare the direct MediaPipe left/right correspondence with the pairwise-swapped mapping on a separate, QC-approved subset of the Penn Action **training** split. By default, the audit excludes the sequence IDs recorded in the selective-repair development run metadata and samples up to one additional sequence per action.
+
+```powershell
+python scripts/audit_penn_action_mapping.py --out outputs/mapping_audit_holdout
+```
+
+Outputs include per-sequence and per-joint CSV metrics, action summaries, per-sequence overlay images, and a contact sheet. Each overlay compares direct and swapped predictions against the same visible Penn Action annotations. Inspect frontal-view examples and per-sequence disagreements rather than choosing a mapping from a pooled score alone. The script does not change the repository's mapping automatically and does not read the official test split.
+
+If the selected sequences must be controlled explicitly, pass `--sequences 0001,0002,...`; these IDs must be QC-approved official-training sequences. The visual audit is diagnostic and does not replace checking the dataset's landmark-annotation convention.
