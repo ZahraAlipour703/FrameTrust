@@ -281,7 +281,15 @@ def main() -> int:
     parser.add_argument("--savgol-polyorder", type=int, default=2)
     parser.add_argument("--ridge", type=float, default=10.0)
     parser.add_argument("--min-predicted-gain", type=float, default=0.01,
-                        help="Minimum torso-normalized predicted-error gain needed to change raw output.")
+                        help="Fixed reference margin used for the descriptive OOF threshold sweep.")
+    parser.add_argument("--inner-folds", type=int, default=3,
+                        help="Number of action-balanced inner folds used to choose a margin inside each outer fold.")
+    parser.add_argument("--nested-pck-tolerance", type=float, default=0.005,
+                        help="Choose the largest margin within this PCK tolerance of the best feasible inner-fold PCK (0.005 = 0.5 percentage points).")
+    parser.add_argument("--nested-min-coverage", type=float, default=0.90,
+                        help="Minimum mean inner-fold prediction coverage for threshold selection.")
+    parser.add_argument("--nested-max-false-correction", type=float, default=0.01,
+                        help="Maximum mean inner-fold false-correction rate for threshold selection.")
     parser.add_argument("--out", type=Path, default=Path("outputs/selective_repair_crossfit"))
     args = parser.parse_args()
 
@@ -293,6 +301,14 @@ def main() -> int:
         parser.error("savgol-polyorder must be >=1 and less than savgol-window")
     if args.ridge < 0 or args.min_predicted_gain < 0:
         parser.error("ridge and min-predicted-gain must be non-negative")
+    if args.inner_folds < 2:
+        parser.error("--inner-folds must be at least 2")
+    if args.nested_pck_tolerance < 0:
+        parser.error("--nested-pck-tolerance must be non-negative")
+    if not 0 < args.nested_min_coverage <= 1:
+        parser.error("--nested-min-coverage must be in (0, 1]")
+    if not 0 <= args.nested_max_false_correction <= 1:
+        parser.error("--nested-max-false-correction must be in [0, 1]")
 
     conditions = [x.strip() for x in args.conditions.split(",") if x.strip()]
     unknown = set(conditions) - set(CONDITIONS)
@@ -370,8 +386,16 @@ def main() -> int:
     choices_rows: list[dict[str, Any]] = []
     prediction_rows: list[dict[str, Any]] = []
     threshold_rows: list[dict[str, Any]] = []
-    # Diagnostic sweep only: do not select the reported threshold from this same sweep.
+    # The original OOF sweep is descriptive only. The nested selector below chooses
+    # a margin exclusively inside each outer training fold; the outer held-out
+    # sequence's labels are not available to threshold selection.
     thresholds = sorted(set([0.0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.15, 0.20, float(args.min_predicted_gain)]))
+    nested_margins, nested_selection_rows, nested_sweep_rows = nested_threshold_selection(
+        cache, selected, conditions, names, thresholds, args.ridge, args.seed,
+        args.inner_folds, args.nested_pck_tolerance, args.nested_min_coverage,
+        args.nested_max_false_correction,
+    )
+    nested_sequence_rows: list[dict[str, Any]] = []
     for condition in conditions:
         for heldout in selected:
             train_x: list[np.ndarray] = []
@@ -431,6 +455,68 @@ def main() -> int:
                 "ridge": args.ridge, "min_predicted_gain": args.min_predicted_gain,
                 **frequencies,
             })
+
+            # Evaluate the margin selected only from nested inner-fold predictions.
+            # This outer sequence was excluded from both selector fitting and margin tuning.
+            nested_margin = nested_margins[(condition, heldout)]
+            nested_choices = select_candidates(predicted, nested_margin)
+            nested_selected_pose = apply_candidate_choices(item["candidates"], nested_choices, names)
+            nested_selected_errors = np.take_along_axis(
+                item["errors"], nested_choices[..., None], axis=-1
+            )[..., 0]
+            raw_correct_for_nested = (
+                target & raw_finite & (raw_error <= 0.20)
+            )
+            raw_correct_n_for_nested = int(raw_correct_for_nested.sum())
+            eval_methods: list[tuple[str, np.ndarray, np.ndarray, float]] = [
+                (
+                    candidate_name,
+                    item["candidates"][candidate_name],
+                    item["errors"][..., k],
+                    float("nan"),
+                )
+                for k, candidate_name in enumerate(names)
+            ]
+            eval_methods.append((
+                "nested_selective",
+                nested_selected_pose,
+                nested_selected_errors,
+                float(nested_margin),
+            ))
+            for method_name, method_pose, method_errors, selected_margin in eval_methods:
+                method_finite = np.isfinite(method_pose).all(axis=-1)
+                method_harmed = raw_correct_for_nested & (
+                    ~method_finite | (method_errors > 0.20)
+                )
+                method_false_correction = (
+                    float(method_harmed.sum() / raw_correct_n_for_nested)
+                    if raw_correct_n_for_nested else float("nan")
+                )
+                nested_sequence_rows.append({
+                    "sequence": heldout,
+                    "action": item["action"],
+                    "condition": condition,
+                    "method": method_name,
+                    "n_scored_points": n_target,
+                    "pck_torso_0.20": (
+                        float(((method_errors <= 0.20) & target).sum() / n_target)
+                        if n_target else float("nan")
+                    ),
+                    "mean_error_norm_clipped": (
+                        float(np.mean(method_errors[target])) if n_target else float("nan")
+                    ),
+                    "coverage": (
+                        float((method_finite & target).sum() / n_target)
+                        if n_target else float("nan")
+                    ),
+                    "false_correction_rate": method_false_correction,
+                    "repair_fraction": (
+                        float((nested_choices[target] != 0).mean())
+                        if method_name == "nested_selective" and n_target else float("nan")
+                    ),
+                    "selected_margin": selected_margin,
+                })
+
             for t in range(choices.shape[0]):
                 for j in range(choices.shape[1]):
                     choices_rows.append({
@@ -510,6 +596,61 @@ def main() -> int:
         selective_mean_error_norm_mean=("selective_mean_error_norm", "mean"),
     )
     summary.to_csv(out / "condition_summary.csv", index=False)
+
+    nested_selection_detail = pd.DataFrame(nested_selection_rows)
+    nested_selection_detail.to_csv(out / "nested_threshold_selection.csv", index=False)
+    pd.DataFrame(nested_sweep_rows).to_csv(out / "nested_inner_threshold_sweep.csv", index=False)
+    nested_detail = pd.DataFrame(nested_sequence_rows)
+    nested_detail.to_csv(out / "nested_selective_sequence_metrics.csv", index=False)
+    nested_summary = nested_detail.groupby(["condition", "method"], as_index=False).agg(
+        n_sequences=("sequence", "nunique"),
+        pck_mean=("pck_torso_0.20", "mean"),
+        mean_error_norm_clipped=("mean_error_norm_clipped", "mean"),
+        coverage_mean=("coverage", "mean"),
+        false_correction_rate_mean=("false_correction_rate", "mean"),
+        repair_fraction_mean=("repair_fraction", "mean"),
+    )
+    nested_summary.to_csv(out / "nested_selective_condition_summary.csv", index=False)
+
+    # Paired sequence-bootstrap intervals on the outer-held-out predictions.
+    # These are still exploratory estimates from one development subset.
+    nested_paired_rows: list[dict[str, Any]] = []
+    nested_rng = np.random.default_rng(args.seed + 887)
+    paired_metrics = [
+        "pck_torso_0.20", "mean_error_norm_clipped", "coverage", "false_correction_rate"
+    ]
+    for condition in conditions:
+        cond = nested_detail[nested_detail["condition"] == condition]
+        for baseline in [m for m in names]:
+            if baseline == "nested_selective":
+                continue
+            for metric in paired_metrics:
+                wide = cond.pivot(index="sequence", columns="method", values=metric)
+                if "nested_selective" not in wide.columns or baseline not in wide.columns:
+                    continue
+                paired = wide[["nested_selective", baseline]].dropna()
+                if paired.empty:
+                    continue
+                delta = (
+                    paired["nested_selective"] - paired[baseline]
+                ).to_numpy(dtype=float)
+                ci_low, ci_high = _bootstrap_mean_ci(delta, nested_rng, n_bootstrap=5000)
+                nested_paired_rows.append({
+                    "condition": condition,
+                    "comparison": f"nested_selective_minus_{baseline}",
+                    "baseline": baseline,
+                    "metric": metric,
+                    "n_paired_sequences": len(paired),
+                    "delta_mean": float(delta.mean()),
+                    "delta_ci95_low": ci_low,
+                    "delta_ci95_high": ci_high,
+                    "bootstrap_samples": 5000,
+                    "bootstrap_unit": "sequence",
+                })
+    pd.DataFrame(nested_paired_rows).to_csv(
+        out / "nested_selective_paired_comparison.csv", index=False
+    )
+
     metadata = {
         "protocol": "leave-one-sequence-out cross-fitting, independently per condition",
         "dataset": "Penn Action",
@@ -521,14 +662,23 @@ def main() -> int:
         "ground_truth_used_only_for_training_labels_and_evaluation": True,
         "ridge": args.ridge,
         "min_predicted_gain_torso_normalized": args.min_predicted_gain,
+        "nested_threshold_selection": {
+            "protocol": "outer leave-one-sequence-out evaluation; within each outer training set, action-balanced inner folds choose the threshold; outer-held-out sequence labels are excluded from fitting and threshold selection",
+            "inner_folds": args.inner_folds,
+            "pck_tolerance": args.nested_pck_tolerance,
+            "minimum_inner_coverage": args.nested_min_coverage,
+            "maximum_inner_false_correction_rate": args.nested_max_false_correction,
+            "selection_rule": "Among inner thresholds meeting coverage and false-correction guardrails, choose the largest margin whose mean sequence PCK is within pck_tolerance of the best feasible threshold; relax false-correction guardrail first, then coverage, only if no threshold is feasible",
+        },
         "target_loss": "candidate localization error normalized by left-shoulder/right-hip torso scale, clipped to [0,1]; missing prediction loss=1",
         "limitations": [
             "Development-only cross-fit on the selected official-training subset; not official test performance.",
-            "Global left/right landmark mapping remains provisional because independent frontal-view validation was inconsistent.",
+            "The swapped left/right mapping is supported by a separate training-sequence audit but remains provisional for view-specific correspondence; see docs/selective-repair-development-results.md.",
             "Selector is a linear error predictor, not a calibrated probability of repair success.",
             "Features use both neighboring frames and are therefore offline/non-causal.",
             "Torso-scale-scored points only; bbox-normalized metrics are not included in this selector script.",
-            "The threshold sweep reuses out-of-fold predictions; it is descriptive and must not be used to claim an unbiased optimum threshold without nested validation.",
+            "The descriptive threshold_sweep_summary.csv reuses ordinary out-of-fold predictions and must not be used to claim an unbiased optimum threshold; use nested_threshold_selection.csv and nested_selective_paired_comparison.csv for the nested analysis.",
+            "The nested estimate uses one action-balanced inner partition per outer held-out sequence; robustness to inner-fold assignment should be checked in a separate sensitivity analysis.",
             "Candidate prediction rows expose calibration/ranking errors and oracle agreement for audit.",
             "The per-sequence output is exploratory and should not be treated as a confirmatory statistical test.",
         ],
@@ -537,6 +687,10 @@ def main() -> int:
     (out / "run_metadata.json").write_text(__import__("json").dumps(metadata, indent=2), encoding="utf-8")
     print("\n=== Cross-fitted summary: sequence means ===")
     print(summary.round(4).to_string(index=False))
+    print("\n=== Nested threshold-selected method: sequence means ===")
+    print(nested_summary.round(4).to_string(index=False))
+    print(f"\nSaved nested thresholds: {out / 'nested_threshold_selection.csv'}")
+    print(f"Saved nested paired comparisons: {out / 'nested_selective_paired_comparison.csv'}")
     print(f"\nSaved outputs to {out}")
     print("Development-only. Do not describe as official test-set performance.")
     return 0
