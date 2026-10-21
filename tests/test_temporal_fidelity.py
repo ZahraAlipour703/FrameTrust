@@ -43,8 +43,8 @@ def test_temporal_metrics_count_only_valid_finite_triples():
         pred, gt, valid, frame_diagonal=100.0, fps=30.0
     )
 
-    # Joint 0 loses triples centred around frames 1, 2, 3. Joint 1 loses
-    # triples containing GT-invalid frame 3 (triples [1,2,3], [2,3,4]).
-    assert n_possible == 2 * (frames - 2) - 2
-    assert n_supported < n_possible
+    # Invalid GT at frame 3 removes three possible triples for joint 1.
+    # A missing prediction at frame 2 removes three supported triples for joint 0.
+    assert n_possible == 2 * (frames - 2) - 3
+    assert n_supported == 2
     assert np.isfinite(metrics["temporal_jitter_norm_s2"])
