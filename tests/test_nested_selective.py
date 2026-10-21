@@ -44,6 +44,9 @@ def _toy_cache():
             "features": features,
             "errors": errors,
             "scoreable": np.ones((frames, joints), dtype=bool),
+            "valid_gt": np.ones((frames, joints), dtype=bool),
+            "torso_scale": np.ones(frames, dtype=float),
+            "gt_xy": np.zeros((frames, joints, 2), dtype=float),
             "raw": raw,
             "candidates": candidates,
         }
