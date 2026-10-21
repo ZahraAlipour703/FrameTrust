@@ -112,7 +112,11 @@ A valid nested design must not simply tune a threshold on `threshold_sweep_per_s
 To avoid repeating MediaPipe inference for every threshold/model fit, cache the per-sequence inference-time features and candidate error targets generated within the official training subset. Keep the target labels separate from inference features; never use ground-truth-derived target values as features. Use sequence-level aggregation and paired intervals, compare against the strongest fixed baselines, and retain the official test split for a single final evaluation after the protocol is locked.
 
 
-## Temporal-fidelity evaluation (2026-10-21)
+## Preliminary temporal-fidelity evaluation (2026-10-21; superseded)
+
+> **Important: do not cite the numeric temporal results in this historical section.** The first run mistakenly used the localization evaluator's torso-scale scoreability mask to decide which ground-truth trajectory points were valid. The temporal metrics normalize by the image diagonal and do not require torso anchors, so the mask unnecessarily excluded otherwise visible and in-frame annotations. The script has since been corrected to construct temporal validity from Penn Action visibility and image bounds. Rerun the corrected script before using any temporal metric, paired interval, or conclusion numerically in a manuscript. The older table is retained only as a record of the initial run.
+
+
 
 The new `scripts/evaluate_temporal_fidelity.py` script was run against the cached wide-grid development experiment. It did not rerun MediaPipe and did not read the official Penn Action test split. The user-reported local test run after fixing two assertions completed with **30 passed**.
 
@@ -148,3 +152,12 @@ The distinction between common support and method-specific support is important.
 These temporal results further weaken the hypothesis that learned selective repair offers a general advantage over conventional repair. Under missing observations and occlusion, it increases the number of usable trajectories and substantially improves localization versus raw predictions; however, its PCK is similar to straightforward interpolation and its temporal fidelity is worse than the stronger smoothing baselines. Under low resolution, its PCK is slightly below the fixed interpolation and confidence-aware baselines while its temporal errors are materially higher.
 
 The current evidence supports **a development-stage comparative study of localization, coverage, and temporal fidelity under controlled degradation**, not a claim of a superior selective-repair method. A submission would need stronger validation and a specific contribution beyond showing that repairing missing outputs beats leaving them missing. Before a final test run, validate the temporal metric implementation on synthetic trajectories with known motion, ensure that every baseline is compared on clearly specified support, expand the sequence/action coverage, lock the protocol, and reserve the official test split for one final evaluation.
+
+
+## Temporal-evaluation correction (2026-10-21)
+
+The initial temporal-fidelity output and table in the preceding historical section are superseded. Code review found that the first version passed the cached torso-scale `valid_gt` mask to temporal evaluation. That mask is correct for torso-normalized PCK but is unnecessarily restrictive for temporal metrics normalized by image diagonal. This can omit visible, in-frame landmarks on frames where required torso anchors are unavailable and can distort both support coverage and method comparisons.
+
+The current `scripts/evaluate_temporal_fidelity.py` instead derives temporal validity from Penn Action's annotated visibility and whether each annotated point lies within the decoded frame bounds. This correction preserves valid temporal observations without requiring torso-scale anchors. The new tests cover validity independent of torso scoreability and exclusion of out-of-frame points.
+
+After pulling the correction, rerun the temporal evaluation and replace the earlier numbers with the new outputs. Until that run is complete, treat all numerical temporal comparisons and associated claims in the historical section as superseded. The localization/PCK results described elsewhere in this document are not changed by this temporal-metric correction.
