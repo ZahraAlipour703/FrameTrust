@@ -65,7 +65,7 @@ def test_temporal_mask_keeps_visible_points_without_torso_scale():
         gt, visible, width=100, height=100
     )
 
-    assert mask[1, 0] is np.False_ or not mask[1, 0]
+    assert not mask[1, 0]
     assert mask[1, 1]
     assert mask.sum() == 5
 
