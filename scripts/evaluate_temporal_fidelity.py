@@ -106,6 +106,34 @@ def temporal_metric_values(
     return result, int(eligible.sum()), int(gt_triples.sum())
 
 
+def temporal_ground_truth_mask(
+    gt_xy: np.ndarray,
+    gt_visible: np.ndarray,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Return all visible, in-frame annotated joints for temporal evaluation.
+
+    Temporal metrics use image-diagonal normalization and therefore must not
+    reuse the localization evaluator's torso-scale scoreability mask. In
+    particular, a frame remains eligible when a torso anchor is not annotated.
+    """
+    gt_xy = np.asarray(gt_xy, dtype=float)
+    gt_visible = np.asarray(gt_visible, dtype=bool)
+    if gt_xy.ndim != 3 or gt_xy.shape[-1] != 2:
+        raise ValueError("gt_xy must have shape [frames, joints, 2]")
+    if gt_visible.shape != gt_xy.shape[:2]:
+        raise ValueError("gt_visible must have shape [frames, joints]")
+    if width <= 0 or height <= 0:
+        raise ValueError("width and height must be positive")
+    finite = np.isfinite(gt_xy).all(axis=-1)
+    in_frame = (
+        (gt_xy[..., 0] >= 0) & (gt_xy[..., 0] < width)
+        & (gt_xy[..., 1] >= 0) & (gt_xy[..., 1] < height)
+    )
+    return gt_visible & finite & in_frame
+
+
 def _load_cache_item(
     path: Path, candidate_names: list[str], expected_signature: str,
 ) -> dict[str, Any]:
@@ -238,8 +266,21 @@ def main() -> int:
             poses = dict(item["candidates"])
             poses["nested_selective"] = nested_pose
 
-            gt = item["gt_xy"]
-            valid_gt = item["valid_gt"]
+            # Temporal evaluation does not require torso anchors. Rebuild
+            # validity from all Penn Action-visible, in-frame landmarks instead
+            # of reusing item["valid_gt"], which is restricted to torso-scale
+            # scoreability for the localization/PCK evaluation.
+            gt = np.asarray(sequence_data["gt_xy"], dtype=float)
+            if gt.shape != item["gt_xy"].shape or not np.allclose(
+                gt, item["gt_xy"], equal_nan=True
+            ):
+                raise ValueError(f"Ground-truth/cache mismatch for sequence {heldout}")
+            valid_gt = temporal_ground_truth_mask(
+                gt,
+                sequence_data["gt_vis"],
+                width=width,
+                height=height,
+            )
             gt_triples = (
                 valid_gt[:-2] & valid_gt[1:-1] & valid_gt[2:]
                 if len(valid_gt) >= 3 else np.zeros((0, valid_gt.shape[1]), dtype=bool)
