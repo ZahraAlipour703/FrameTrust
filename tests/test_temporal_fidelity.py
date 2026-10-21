@@ -48,3 +48,34 @@ def test_temporal_metrics_count_only_valid_finite_triples():
     assert n_possible == 2 * (frames - 2) - 3
     assert n_supported == 2
     assert np.isfinite(metrics["temporal_jitter_norm_s2"])
+
+
+def test_temporal_mask_keeps_visible_points_without_torso_scale():
+    gt = np.array([
+        [[10.0, 10.0], [20.0, 20.0]],
+        [[11.0, 10.0], [21.0, 20.0]],
+        [[12.0, 10.0], [22.0, 20.0]],
+    ])
+    visible = np.ones((3, 2), dtype=bool)
+    # The first landmark is invisible on the middle frame, but that must not
+    # invalidate the second landmark or require any torso-scale anchors.
+    visible[1, 0] = False
+
+    mask = module.temporal_ground_truth_mask(
+        gt, visible, width=100, height=100
+    )
+
+    assert mask[1, 0] is np.False_ or not mask[1, 0]
+    assert mask[1, 1]
+    assert mask.sum() == 5
+
+
+def test_temporal_mask_excludes_out_of_frame_annotations():
+    gt = np.array([[[10.0, 10.0], [101.0, 20.0]]])
+    visible = np.ones((1, 2), dtype=bool)
+
+    mask = module.temporal_ground_truth_mask(
+        gt, visible, width=100, height=100
+    )
+
+    assert mask.tolist() == [[True, False]]
