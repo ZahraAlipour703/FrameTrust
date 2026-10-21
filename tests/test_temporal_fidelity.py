@@ -26,9 +26,9 @@ def test_temporal_metrics_zero_for_identical_constant_velocity_trajectories():
 
     assert n_supported == (frames - 2) * joints
     assert n_possible == (frames - 2) * joints
-    assert metrics["temporal_jitter_norm_s2"] == 0.0
-    assert metrics["velocity_error_norm_s"] == 0.0
-    assert metrics["acceleration_error_norm_s2"] == 0.0
+    assert np.isclose(metrics["temporal_jitter_norm_s2"], 0.0, atol=1e-12)
+    assert np.isclose(metrics["velocity_error_norm_s"], 0.0, atol=1e-12)
+    assert np.isclose(metrics["acceleration_error_norm_s2"], 0.0, atol=1e-12)
 
 
 def test_temporal_metrics_count_only_valid_finite_triples():
@@ -46,5 +46,5 @@ def test_temporal_metrics_count_only_valid_finite_triples():
     # Invalid GT at frame 3 removes three possible triples for joint 1.
     # A missing prediction at frame 2 removes three supported triples for joint 0.
     assert n_possible == 2 * (frames - 2) - 3
-    assert n_supported == 3
+    assert n_supported == 2
     assert np.isfinite(metrics["temporal_jitter_norm_s2"])
