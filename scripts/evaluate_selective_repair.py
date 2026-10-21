@@ -498,7 +498,11 @@ def main() -> int:
     # The original OOF sweep is descriptive only. The nested selector below chooses
     # a margin exclusively inside each outer training fold; the outer held-out
     # sequence's labels are not available to threshold selection.
-    thresholds = sorted(set([0.0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.15, 0.20, float(args.min_predicted_gain)]))
+    thresholds = sorted(set([
+    0.0, 0.005, 0.01, 0.02, 0.03, 0.05,
+    0.075, 0.10, 0.15, 0.20, 0.25, 0.30,
+    0.40, 0.50, 0.75, 1.00,
+    float(args.min_predicted_gain)]))
     nested_margins, nested_selection_rows, nested_sweep_rows = nested_threshold_selection(
         cache, selected, conditions, names, thresholds, args.ridge, args.seed,
         args.inner_folds, args.nested_pck_tolerance, args.nested_min_coverage,
