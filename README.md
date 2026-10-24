@@ -142,6 +142,22 @@ Run from the repository root:
 python scripts/evaluate_selective_repair.py --max-per-action 2 --conditions clean,blur,low_resolution,occlusion,missing_pose_observations --min-predicted-gain 0.01 --out outputs/selective_repair_crossfit
 ```
 
-Outputs include per-sequence metrics, per-point method choices, condition summaries, and protocol metadata. Use the same fixed sequence set when comparing margin values. Choose any margin using development-only cross-validation; do not choose it based on official test results. The selector currently uses two-sided temporal features and is therefore an offline method, not a causal real-time filter.
+Outputs include per-sequence metrics, per-point method choices, condition summaries, protocol metadata, and a nested margin-selection evaluation. By default, each outer held-out sequence is excluded while an action-balanced inner-fold evaluation selects the largest repair margin whose mean PCK is within 0.5 percentage points of the best feasible inner PCK, subject to mean coverage of at least 0.90 and false-correction rate no greater than 0.01. If those guardrails cannot both be met, the metadata records which guardrail was relaxed. This selection rule is a prespecified development choice; treat results as exploratory and check sensitivity to inner-fold assignments before locking a final protocol. The selector currently uses two-sided temporal features and is therefore an offline method, not a causal real-time filter.
 
-**Important limitation:** the Penn Action left/right mapping remains provisional. An independent mapping check was inconsistent for frontal-view sequences, so mapping-sensitive conclusions should not be treated as settled until that issue is resolved. The selector is a research hypothesis to test, not yet an established improvement. Report its accuracy, coverage, false-correction rate, and repair fraction together; a positive result on this development subset alone does not establish generalization.
+The nested outputs are `nested_threshold_selection.csv`, `nested_inner_threshold_sweep.csv`, `nested_selective_sequence_metrics.csv`, `nested_selective_condition_summary.csv`, and `nested_selective_paired_comparison.csv`. The official test split is not read by the evaluator. The original `threshold_sweep_summary.csv` remains descriptive only and must not be used to report a selected optimum threshold.
+
+Per-sequence inference features, candidate coordinates, and error targets are also saved under `feature_cache/` in the output directory. After an initial run, a threshold or inner-fold sensitivity analysis with the same sequence set and inference settings can use `--reuse-feature-cache` to avoid rerunning MediaPipe. The cache includes a configuration signature and refuses reuse if the selected sequences, conditions, landmark mapping, or inference settings differ.
+
+**Important limitation:** a follow-up clean-frame audit on 15 additional QC-approved official-training sequences favored the pairwise-swapped mapping: with torso normalization, it had higher PCK on 9 of 10 scoreable sequences; with bounding-box-diagonal normalization, it had higher PCK on 13 of 15 sequences (sequence-macro PCK 0.696 direct vs 0.873 swapped). This supports retaining the swapped mapping for development, but does not prove a universal mapping across viewpoints; the `strum_guitar` sequence was a counterexample under the bbox metric. See [the recorded development results](docs/selective-repair-development-results.md). The selector remains a research hypothesis, not an established improvement. Report accuracy, coverage, false-correction rate, and repair fraction together; results on a development subset do not establish generalization.
+
+## Independent landmark-mapping audit
+
+Before further selector tuning, compare the direct MediaPipe left/right correspondence with the pairwise-swapped mapping on a separate, QC-approved subset of the Penn Action **training** split. By default, the audit excludes the sequence IDs recorded in the selective-repair development run metadata and samples up to one additional sequence per action.
+
+```powershell
+python scripts/audit_penn_action_mapping.py --out outputs/mapping_audit_holdout
+```
+
+Outputs include per-sequence and per-joint CSV metrics, action summaries, per-sequence overlay images, and a contact sheet. Each overlay compares direct and swapped predictions against the same visible Penn Action annotations. Inspect frontal-view examples and per-sequence disagreements rather than choosing a mapping from a pooled score alone. The script does not change the repository's mapping automatically and does not read the official test split.
+
+If the selected sequences must be controlled explicitly, pass `--sequences 0001,0002,...`; these IDs must be QC-approved official-training sequences. The visual audit is diagnostic and does not replace checking the dataset's landmark-annotation convention.
