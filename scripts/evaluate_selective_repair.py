@@ -495,9 +495,7 @@ def main() -> int:
     choices_rows: list[dict[str, Any]] = []
     prediction_rows: list[dict[str, Any]] = []
     threshold_rows: list[dict[str, Any]] = []
-    # The original OOF sweep is descriptive only. The nested selector below chooses
-    # a margin exclusively inside each outer training fold; the outer held-out
-    # sequence's labels are not available to threshold selection.
+
     thresholds = sorted(set([
     0.0, 0.005, 0.01, 0.02, 0.03, 0.05,
     0.075, 0.10, 0.15, 0.20, 0.25, 0.30,
