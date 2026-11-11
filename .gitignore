@@ -1,9 +1,9 @@
 .venv/
 __pycache__/
 .pytest_cache/
-*.py[cod]
-outputs/**
-!outputs/.gitkeep
+# *.py[cod]
+# outputs/**
+# !outputs/.gitkeep
 *.mp4
 *.mov
 *.avi
@@ -11,4 +11,8 @@ outputs/**
 # Keep manual annotations (which may encode sensitive motion data) out of public commits.
 # data/annotations*.csv
 
-data/external/
+# data/external/
+
+# Local datasets and experiment outputs - do not commit
+/data/external/
+/outputs/
