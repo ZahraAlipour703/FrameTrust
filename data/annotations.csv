@@ -1,0 +1,4 @@
+frame_index,timestamp_seconds,joint_index,joint_name,x,y,visible
+0,0.0,0,nose,,,0
+0,0.0,11,left_shoulder,,,0
+0,0.0,12,right_shoulder,,,0
