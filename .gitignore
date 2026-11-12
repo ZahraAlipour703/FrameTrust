@@ -16,3 +16,4 @@ __pycache__/
 # Local datasets and experiment outputs - do not commit
 /data/external/
 /outputs/
+.venv310/
