@@ -1,0 +1,51 @@
+{
+  "purpose": "diagnostic only; verify GT-coordinate alignment and joint mapping visually",
+  "sequences": [
+    "0052",
+    "0219",
+    "0425",
+    "0655",
+    "0735",
+    "0805",
+    "0963",
+    "1094",
+    "1189",
+    "1441",
+    "1586",
+    "1863",
+    "1940",
+    "2130",
+    "2212"
+  ],
+  "mediapipe_model_complexity": 0,
+  "mediapipe_smooth_landmarks": false,
+  "landmark_mapping": {
+    "left_shoulder": 12,
+    "right_shoulder": 11,
+    "left_elbow": 14,
+    "right_elbow": 13,
+    "left_wrist": 16,
+    "right_wrist": 15,
+    "left_hip": 24,
+    "right_hip": 23,
+    "left_knee": 26,
+    "right_knee": 25,
+    "left_ankle": 28,
+    "right_ankle": 27
+  },
+  "penn_action_source_indices_zero_based": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ],
+  "normalization_scale": "distance between visible, in-bounds selected left shoulder and right hip (indices 0 and 7)"
+}

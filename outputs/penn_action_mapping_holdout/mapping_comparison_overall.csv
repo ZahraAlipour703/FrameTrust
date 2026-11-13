@@ -1,0 +1,2 @@
+sequences,paired_points,corrected_mean_error_macro,prior_mean_error_macro,corrected_pck_macro,prior_pck_macro,pck_gain_macro,sequences_corrected_better
+11.0,4525.0,0.27620387470283575,0.5960903230555293,0.7302505784460901,0.14744648561222362,0.5828040928338665,9.0
