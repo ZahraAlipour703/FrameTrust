@@ -15,5 +15,23 @@ __pycache__/
 
 # Local datasets and experiment outputs - do not commit
 /data/external/
-/outputs/
+# /outputs/
 .venv310/
+# Ignore generated outputs by default
+/outputs/*
+
+# Mapping validation input
+!/outputs/penn_action_mapping_holdout/
+!/outputs/penn_action_mapping_holdout/*
+!/outputs/penn_action_mapping_holdout/selected_mapping_validation_sequences.csv
+
+# Mapping validation results
+!/outputs/penn_action_mapping_holdout_v2/
+!/outputs/penn_action_mapping_holdout_v2/*
+!/outputs/penn_action_mapping_holdout_v2/mapping_metrics_by_sequence.csv
+!/outputs/penn_action_mapping_holdout_v2/mapping_metrics_by_joint.csv
+!/outputs/penn_action_mapping_holdout_v2/mapping_common_support_by_sequence.csv
+!/outputs/penn_action_mapping_holdout_v2/mapping_summary_overall.csv
+!/outputs/penn_action_mapping_holdout_v2/mapping_summary_by_viewpoint.csv
+!/outputs/penn_action_mapping_holdout_v2/mapping_summary_by_action.csv
+!/outputs/penn_action_mapping_holdout_v2/mapping_audit_metadata.json
